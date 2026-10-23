@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { createServer } from '../src/server.js';
 import { SiteManagerApi } from '../src/api.js';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 test('real MCP handshake, tool schemas, validation, defaults, errors and guide resource', async () => {
   const requests = [];
@@ -19,7 +22,7 @@ test('real MCP handshake, tool schemas, validation, defaults, errors and guide r
     await server.connect(serverTransport);
     await client.connect(clientTransport);
     const listing = await client.listTools();
-    assert.equal(listing.tools.length, 17);
+    assert.equal(listing.tools.length, 21);
     assert.equal(listing.tools.find(t => t.name === 'aism_discover').annotations.readOnlyHint, true);
     assert.equal(listing.tools.find(t => t.name === 'aism_content_delete').annotations.destructiveHint, true);
     const discovery = await client.callTool({ name: 'aism_discover', arguments: {} });
@@ -52,4 +55,69 @@ test('real MCP handshake, tool schemas, validation, defaults, errors and guide r
     const guide = await client.readResource({ uri: 'aism://guide' });
     assert.equal(guide.contents[0].text, '# Site guide');
   } finally { await client.close(); await server.close(); }
+});
+
+test('theme tools expose native schema, ZIP upload, actions and destructive hints through MCP', async () => {
+  const requests = [];
+  const api = new SiteManagerApi({ base: 'https://example.test/wp-json/ai-site-manager/v1', key: 'test-key', fetchImpl: async (url, options) => {
+    requests.push({ url, ...options });
+    if (url.pathname.endsWith('/themes/action') && JSON.parse(options.body).action === 'delete') {
+      return Response.json({ code: 'aism_active_theme', message: 'Switch themes first.' }, { status: 409 });
+    }
+    return Response.json({ theme: 'example', status: 'inactive' });
+  } });
+  const server = createServer(api);
+  const client = new Client({ name: 'theme-test', version: '1.0.0' });
+  const [ct, st] = InMemoryTransport.createLinkedPair();
+  const folder = await mkdtemp(join(tmpdir(), 'aism-theme-'));
+  try {
+    await server.connect(st);
+    await client.connect(ct);
+    const { tools } = await client.listTools();
+    assert.equal(tools.find(t => t.name === 'aism_themes_list').annotations.readOnlyHint, true);
+    for (const name of ['aism_theme_install', 'aism_theme_upload', 'aism_theme_action']) {
+      assert.equal(tools.find(t => t.name === name).annotations.readOnlyHint, false);
+      assert.equal(tools.find(t => t.name === name).annotations.destructiveHint, true);
+    }
+    await client.callTool({ name: 'aism_schema', arguments: { resource: 'themes' } });
+    assert.equal(requests.at(-1).url.searchParams.get('resource'), 'themes');
+    await client.callTool({ name: 'aism_themes_list', arguments: {} });
+    assert.equal(requests.at(-1).method, 'GET');
+    assert.ok(requests.at(-1).url.pathname.endsWith('/themes'));
+    await client.callTool({ name: 'aism_theme_install', arguments: { slug: 'twentytwentyone' } });
+    assert.ok(requests.at(-1).url.pathname.endsWith('/themes/install'));
+    assert.deepEqual(JSON.parse(requests.at(-1).body), { slug: 'twentytwentyone' });
+    const file = join(folder, 'theme.zip');
+    const bytes = Buffer.from('fixture ZIP bytes');
+    await writeFile(file, bytes);
+    await client.callTool({ name: 'aism_theme_upload', arguments: { file_path: file } });
+    assert.ok(requests.at(-1).url.pathname.endsWith('/themes/upload'));
+    const upload = requests.at(-1).body.get('themezip');
+    assert.equal(upload.name, 'theme.zip');
+    assert.deepEqual(Buffer.from(await upload.arrayBuffer()), bytes);
+    for (const action of ['activate', 'update', 'delete']) {
+      const result = await client.callTool({ name: 'aism_theme_action', arguments: { theme: 'collection/example', action } });
+      assert.equal(requests.at(-1).method, 'POST');
+      assert.ok(requests.at(-1).url.pathname.endsWith('/themes/action'));
+      assert.deepEqual(JSON.parse(requests.at(-1).body), { theme: 'collection/example', action });
+      if (action === 'delete') {
+        assert.equal(result.isError, true);
+        assert.equal(result.structuredContent.code, 'aism_active_theme');
+        assert.equal(result.structuredContent.status, 409);
+      }
+    }
+    const count = requests.length;
+    for (const [name, args] of [
+      ['aism_theme_install', { slug: '../example' }],
+      ['aism_theme_action', { theme: 'example', action: 'deactivate' }],
+      ['aism_content_get', { resource: 'themes', id: 1 }],
+    ]) {
+      const result = await client.callTool({ name, arguments: args });
+      assert.equal(result.isError, true);
+    }
+    assert.equal(requests.length, count);
+  } finally {
+    await client.close(); await server.close();
+    await rm(folder, { recursive: true });
+  }
 });

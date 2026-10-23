@@ -1,12 +1,12 @@
 # AI Site Manager MCP
 
-An MCP server for the **AI Site Manager** WordPress plugin. Connect an MCP client to your site's scoped API key to work with posts, pages, custom post types, taxonomies, comments, media, approved settings and plugins.
+An MCP server for the **AI Site Manager** WordPress plugin. Connect an MCP client to your site's scoped API key to work with posts, pages, custom post types, taxonomies, comments, media, approved settings, plugins and themes.
 
 This is a local stdio MCP adapter. The AI Site Manager plugin must already be installed and activated on your WordPress site. It connects to that plugin's HTTPS API; it does not install the WordPress plugin or provide a hosted MCP endpoint.
 
 ## Install the WordPress companion
 
-1. Download [ai-site-manager.zip from the release](https://github.com/nkd3v/ai-site-manager-mcp/releases/latest/download/ai-site-manager.zip), or use the [ZIP committed in this repository](releases/ai-site-manager.zip?raw=true).
+1. Download the [current ai-site-manager.zip](releases/ai-site-manager.zip?raw=true) from this repository. Tagged versions are also available on the [releases page](https://github.com/nkd3v/ai-site-manager-mcp/releases).
 2. Upload it in **WordPress → Plugins → Add New → Upload Plugin**, then activate it. Requires WordPress 6.6+ and PHP 7.4+.
 3. Open **Settings → AI Site Manager**. Create an expiring key, choose its user and scopes, and approve exact option names if settings access is needed.
 4. Save the one-time key privately and copy the API base URL. Configure the MCP client below.
@@ -47,7 +47,7 @@ Add this entry to a client that accepts `mcpServers` configuration:
   "mcpServers": {
     "ai-site-manager": {
       "command": "npx",
-      "args": ["--yes", "github:nkd3v/ai-site-manager-mcp#v1.0.0"],
+      "args": ["--yes", "github:nkd3v/ai-site-manager-mcp"],
       "env": {
         "WP_AI_BASE": "https://example.com/wp-json/ai-site-manager/v1",
         "WP_AI_KEY_FILE": "/absolute/path/to/ai-site-manager.key"
@@ -83,12 +83,15 @@ You can supply `WP_AI_KEY` directly instead of `WP_AI_KEY_FILE`; do not set both
 | `aism_media_upload` | Upload an operator-provided local image/media file; optional title, alt text, caption and parent post |
 | `aism_settings_list`, `aism_settings_get`, `aism_settings_update` | Read or replace values of exactly approved settings |
 | `aism_plugins_list`, `aism_plugin_install`, `aism_plugin_upload`, `aism_plugin_action` | List/install/upload/activate/deactivate/update/delete plugins |
+| `aism_themes_list`, `aism_theme_install`, `aism_theme_upload`, `aism_theme_action` | List/install/upload/activate/update/delete themes |
 
 The authenticated site guide is also available as the MCP resource `aism://guide`. Successful tool results include `{status, headers, data}`; native pagination headers appear in `headers`. API failures set MCP `isError` and include the status and error code. Credentials are redacted from results.
 
 Start with `aism_discover`, then `aism_schema` for the relevant resource. `aism_content_create` defaults posts and pages to `draft`; publication requires an explicit `status`. Native JSON fields and query parameters pass through to the plugin. Use `context: "edit"` to read raw Gutenberg content; preserve it when editing. `aism_content_update` sends only the supplied fields. Structured settings updates replace the whole value, so read immediately before editing.
 
-The server exposes all tools; the API independently enforces the key's scopes, approved option names and owner's current WordPress capabilities on every request. Read scopes do not permit edits or deletions. Plugin installation adds executable code; grant those permissions only when intended. The gateway has no arbitrary SQL, PHP execution, user/theme administration, private metadata access or remote-URL fetching. The tool hints identify reads and destructive operations; clients must still honor the operator's authorization.
+The server exposes all tools; the API independently enforces the key's scopes, approved option names and owner's current WordPress capabilities on every request. Read scopes do not permit edits or deletions. Plugin and theme installation adds executable code; grant those permissions only when intended. The gateway has no arbitrary SQL, PHP execution, user administration, private metadata access or remote-URL fetching. The tool hints identify reads and destructive operations; clients must still honor the operator's authorization.
+
+Theme support requires companion plugin 1.1.0 or later and a key issued with `themes:read`, `themes:write` and/or `themes:delete` as needed. Existing keys gain no additional permissions; create a new key to grant theme access. `aism_schema` accepts `themes`. Use the `stylesheet` identifier from `aism_themes_list` as the `theme` argument for actions. Installation leaves themes inactive and ZIP uploads never replace installed themes. Switching to another theme deactivates the current one; there is no standalone deactivate action. Deletion rejects the active theme and its parent. Updates use WordPress-advertised packages. Theme mutations support single-site WordPress only.
 
 ## Network behavior and troubleshooting
 

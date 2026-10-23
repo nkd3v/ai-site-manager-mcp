@@ -2,7 +2,7 @@
 /**
  * Plugin Name: AI Site Manager
  * Description: Scoped API keys for AI clients to manage WordPress content and approved settings, with live API documentation.
- * Version: 1.0.0
+ * Version: 1.1.0
  * Requires at least: 6.6
  * Requires PHP: 7.4
  * License: GPL-2.0-or-later
@@ -10,10 +10,11 @@
  */
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
-define( 'AISM_VERSION', '1.0.0' );
+define( 'AISM_VERSION', '1.1.0' );
 define( 'AISM_DIR', plugin_dir_path( __FILE__ ) );
 require_once AISM_DIR . 'includes/class-store.php';
 require_once AISM_DIR . 'includes/class-plugins.php';
+require_once AISM_DIR . 'includes/class-themes.php';
 require_once AISM_DIR . 'includes/class-api.php';
 require_once AISM_DIR . 'includes/class-admin.php';
 register_activation_hook( __FILE__, array( 'AISM_Store', 'install' ) );

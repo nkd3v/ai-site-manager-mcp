@@ -80,6 +80,50 @@ $subscriber_id = wp_create_user( 'aism-subscriber-' . wp_generate_password( 6, f
 $subscriber = new WP_User( $subscriber_id );
 $subscriber->set_role( 'subscriber' );
 $limited = key_for( $subscriber_id, AISM_Store::scopes(), array( 'blogname' ) );
+// Theme permissions are independent of plugin permissions and of each other.
+$theme_read = key_for( $admin->ID, array( 'themes:read' ) );
+$theme_write = key_for( $admin->ID, array( 'themes:write' ) );
+$theme_delete = key_for( $admin->ID, array( 'themes:delete' ) );
+$active_theme = get_stylesheet();
+check( call_api( 'GET', '/themes', $full['token'] )->get_status() === 200, 'Theme listing failed' );
+check( call_api( 'GET', '/schema', $full['token'], null, array( 'resource' => 'themes' ) )->get_status() === 200, 'Theme schema failed' );
+check( in_array( 'POST /themes/upload', call_api( 'GET', '/discovery', $full['token'] )->get_data()['endpoints'], true ), 'Theme endpoints missing in discovery' );
+check( call_api( 'GET', '/themes', $read['token'] )->get_status() === 403, 'Plugin read gained theme access' );
+check( call_api( 'GET', '/themes', $theme_write['token'] )->get_status() === 403, 'Theme write gained read access' );
+check( call_api( 'POST', '/themes/action', $theme_read['token'], array( 'theme' => $active_theme, 'action' => 'activate' ) )->get_status() === 403, 'Theme read gained activation' );
+check( call_api( 'POST', '/themes/action', $theme_write['token'], array( 'theme' => $active_theme, 'action' => 'delete' ) )->get_status() === 403, 'Theme write gained deletion' );
+check( call_api( 'POST', '/themes/action', $theme_delete['token'], array( 'theme' => $active_theme, 'action' => 'activate' ) )->get_status() === 403, 'Theme delete gained activation' );
+check( call_api( 'POST', '/themes/action', $theme_delete['token'], array( 'theme' => $active_theme, 'action' => 'delete' ) )->get_status() === 409, 'Active theme deletion accepted' );
+check( call_api( 'POST', '/themes/action', $theme_write['token'], array( 'theme' => $active_theme, 'action' => 'activate' ) )->get_status() === 200, 'Theme activation failed' );
+check( call_api( 'POST', '/themes/upload', $full['token'] )->get_status() === 400, 'Missing theme ZIP accepted' );
+foreach ( array( '../theme', '', 'https://example.test/theme.zip' ) as $slug ) {
+	check( call_api( 'POST', '/themes/install', $full['token'], array( 'slug' => $slug ) )->get_status() === 400, 'Invalid theme slug accepted' );
+}
+check( call_api( 'POST', '/themes/action', $full['token'], array( 'theme' => '../wp-config.php', 'action' => 'activate' ) )->get_status() === 404, 'Theme path traversal accepted' );
+check( call_api( 'POST', '/themes/action', $full['token'], array( 'theme' => $active_theme, 'action' => 'deactivate' ) )->get_status() === 400, 'Unsupported theme action accepted' );
+check( call_api( 'GET', '/themes', $limited['token'] )->get_status() === 403, 'Theme read capability bypassed' );
+check( call_api( 'POST', '/themes/install', $limited['token'], array( 'slug' => 'twentytwentyone' ) )->get_status() === 403, 'Theme install capability bypassed' );
+check( call_api( 'POST', '/themes/upload', $limited['token'] )->get_status() === 403, 'Theme upload capability bypassed' );
+foreach ( array( 'activate', 'update', 'delete' ) as $action ) {
+	check( call_api( 'POST', '/themes/action', $limited['token'], array( 'theme' => $active_theme, 'action' => $action ) )->get_status() === 403, 'Theme capability bypassed: ' . $action );
+}
+// Invalid and incompatible themes must return JSON errors before switch_theme can call wp_die.
+$fixture = get_theme_root() . '/aism-incompatible';
+wp_mkdir_p( $fixture );
+file_put_contents( $fixture . '/style.css', "/*\nTheme Name: Incompatible fixture\nRequires PHP: 999.0\n*/" );
+file_put_contents( $fixture . '/index.php', '<?php // Fixture.' );
+wp_clean_themes_cache();
+check( call_api( 'POST', '/themes/action', $full['token'], array( 'theme' => 'aism-incompatible', 'action' => 'activate' ) )->get_status() === 400 && get_stylesheet() === $active_theme, 'Incompatible theme activated' );
+file_put_contents( $fixture . '/style.css', "/*\nTheme Name: Broken fixture\nTemplate: aism-missing-parent\n*/" );
+wp_clean_themes_cache();
+check( call_api( 'POST', '/themes/action', $full['token'], array( 'theme' => 'aism-incompatible', 'action' => 'activate' ) )->get_status() === 400 && get_stylesheet() === $active_theme, 'Missing-parent theme activated' );
+add_filter( 'request_filesystem_credentials', '__return_false' );
+ob_start();
+$fs_denied = call_api( 'POST', '/themes/action', $theme_delete['token'], array( 'theme' => 'aism-incompatible', 'action' => 'delete' ) );
+$fs_output = ob_get_clean();
+remove_filter( 'request_filesystem_credentials', '__return_false' );
+check( $fs_denied->get_status() === 409 && '' === $fs_output, 'Filesystem credential failure leaked output or was ignored' );
+check( call_api( 'POST', '/themes/action', $theme_delete['token'], array( 'theme' => 'aism-incompatible', 'action' => 'delete' ) )->get_status() === 200, 'Delete-only key could not delete a broken inactive theme' );
 check( call_api( 'POST', '/wp/posts', $limited['token'], array( 'title' => 'Bad' ) )->get_status() === 403, 'Native content capabilities bypassed' );
 check( call_api( 'GET', '/settings/blogname', $limited['token'] )->get_status() === 403, 'Settings capability bypassed' );
 check( call_api( 'GET', '/plugins', $limited['token'] )->get_status() === 403, 'Plugin read capabilities bypassed' );
@@ -107,5 +151,5 @@ call_api( 'DELETE', '/wp/posts/' . $post_id, $full['token'], null, array( 'force
 wp_delete_post( $other, true );
 wp_delete_term( $term_id, 'category' );
 wp_delete_user( $subscriber_id );
-foreach ( array( $full, $read, $write, $limited, $expired, $revoked ) as $key ) { AISM_Store::revoke( $key['id'] ); }
+foreach ( array( $full, $read, $write, $limited, $expired, $revoked, $theme_read, $theme_write, $theme_delete ) as $key ) { AISM_Store::revoke( $key['id'] ); }
 echo "PASS: $aism_tests integration assertions\n";

@@ -15,6 +15,7 @@ final class AISM_API {
 		foreach ( array(
 			'/discovery' => 'GET', '/guide' => 'GET', '/schema' => 'GET',
 			'/plugins' => 'GET', '/plugins/install' => 'POST', '/plugins/upload' => 'POST', '/plugins/action' => 'POST',
+			'/themes' => 'GET', '/themes/install' => 'POST', '/themes/upload' => 'POST', '/themes/action' => 'POST',
 			'/settings' => 'GET', '/settings/(?P<option>[a-zA-Z0-9_.-]+)' => 'GET,PUT',
 			'/wp/(?P<resource>[a-zA-Z0-9_-]+)(?:/(?P<object_id>[1-9][0-9]*|[a-zA-Z_-]+))?(?:/(?P<subresource>revisions)(?:/(?P<revision_id>[1-9][0-9]*))?)?' => 'GET,POST,PUT,PATCH,DELETE',
 		) as $route => $methods ) {
@@ -78,10 +79,10 @@ final class AISM_API {
 	private function required_scope( $request ) {
 		$route = $request->get_route();
 		$method = $request->get_method();
-		if ( preg_match( '#^/' . self::NS . '/plugins(?:/|$)#', $route ) ) {
+		if ( preg_match( '#^/' . self::NS . '/(plugins|themes)(?:/|$)#', $route, $matches ) ) {
 			$body = $request->get_json_params();
 			$delete = is_array( $body ) && isset( $body['action'] ) && 'delete' === $body['action'] && substr( $route, -7 ) === '/action';
-			return 'GET' === $method ? 'plugins:read' : ( $delete ? 'plugins:delete' : 'plugins:write' );
+			return $matches[1] . ( 'GET' === $method ? ':read' : ( $delete ? ':delete' : ':write' ) );
 		}
 		if ( preg_match( '#^/' . self::NS . '/settings(?:/|$)#', $route ) ) { return 'GET' === $method ? 'settings:read' : 'settings:write'; }
 		if ( 0 !== strpos( $route, '/' . self::NS . '/wp/' ) ) { return ''; }
@@ -109,6 +110,7 @@ final class AISM_API {
 			elseif ( '/guide' === $route ) { $result = array( 'format' => 'markdown', 'guide' => file_get_contents( AISM_DIR . 'docs/AI-GUIDE.md' ) ); }
 			elseif ( '/schema' === $route ) { $result = $this->schema( $request ); }
 			elseif ( '/plugins' === $route || 0 === strpos( $route, '/plugins/' ) ) { $result = AISM_Plugins::dispatch( $request, $route ); }
+			elseif ( '/themes' === $route || 0 === strpos( $route, '/themes/' ) ) { $result = AISM_Themes::dispatch( $request, $route ); }
 			elseif ( '/settings' === $route || 0 === strpos( $route, '/settings/' ) ) { $result = $this->settings( $request, $key ); }
 			else { $result = $this->forward( $request ); }
 			$response = is_wp_error( $result ) ? rest_convert_error_to_response( $result ) : rest_ensure_response( $result );
@@ -150,7 +152,7 @@ final class AISM_API {
 			'plugin_version' => AISM_VERSION, 'wordpress_version' => get_bloginfo( 'version' ), 'base_url' => rest_url( self::NS ),
 			'key' => array( 'id' => (int) $key['id'], 'name' => $key['name'], 'user_id' => (int) $key['user_id'], 'scopes' => $key['scopes'], 'expires_at_utc' => $key['expires_at'] ),
 			'resources' => $this->resources(), 'approved_options' => array_values( array_filter( $key['option_names'], array( 'AISM_Store', 'option_allowed' ) ) ),
-			'endpoints' => array( 'GET /guide', 'GET /schema?resource=posts', 'GET /settings', 'GET|PUT /settings/{option}', 'GET|POST /wp/{resource}', 'GET|POST|PUT|PATCH|DELETE /wp/{resource}/{id}', 'GET /wp/{resource}/{id}/revisions', 'GET /plugins', 'POST /plugins/install', 'POST /plugins/upload', 'POST /plugins/action' ),
+			'endpoints' => array( 'GET /guide', 'GET /schema?resource=posts', 'GET /settings', 'GET|PUT /settings/{option}', 'GET|POST /wp/{resource}', 'GET|POST|PUT|PATCH|DELETE /wp/{resource}/{id}', 'GET /wp/{resource}/{id}/revisions', 'GET /plugins', 'POST /plugins/install', 'POST /plugins/upload', 'POST /plugins/action', 'GET /themes', 'POST /themes/install', 'POST /themes/upload', 'POST /themes/action' ),
 			'stores' => array( 'posts, postmeta' => '/wp/posts, /wp/pages, /wp/media and other discovered post types; REST-registered meta in the meta field', 'terms, term_taxonomy, term_relationships, termmeta' => 'Discovered taxonomy resources; assign terms through post fields', 'comments, commentmeta' => '/wp/comments', 'options' => '/settings/{option}; explicit per-key allowlist' ),
 			'limits' => array( 'max_per_page' => 100, 'settings_body_bytes' => 262144, 'raw_sql' => false, 'native_wordpress_permissions' => true, 'key_authentication_outside_this_namespace' => false ),
 		);
@@ -159,7 +161,7 @@ final class AISM_API {
 	private function schema( $request ) {
 		$resource = $request->get_param( 'resource' );
 		$resources = $this->resources();
-		if ( ! is_string( $resource ) || ( ! isset( $resources[ $resource ] ) && 'plugins' !== $resource ) ) { return $this->error( 'aism_invalid_resource', 'Provide a resource from /discovery, for example ?resource=posts.', 400 ); }
+		if ( ! is_string( $resource ) || ( ! isset( $resources[ $resource ] ) && ! in_array( $resource, array( 'plugins', 'themes' ), true ) ) ) { return $this->error( 'aism_invalid_resource', 'Provide a resource from /discovery, for example ?resource=posts.', 400 ); }
 		return rest_do_request( new WP_REST_Request( 'OPTIONS', '/wp/v2/' . $resource ) );
 	}
 

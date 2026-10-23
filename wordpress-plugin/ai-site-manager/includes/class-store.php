@@ -45,7 +45,7 @@ final class AISM_Store {
 
 	public static function scopes() {
 		$result = array();
-		foreach ( array( 'content', 'media', 'taxonomies', 'comments', 'plugins' ) as $group ) {
+		foreach ( array( 'content', 'media', 'taxonomies', 'comments', 'plugins', 'themes' ) as $group ) {
 			foreach ( array( 'read', 'write', 'delete' ) as $action ) { $result[] = "$group:$action"; }
 		}
 		return array_merge( $result, array( 'settings:read', 'settings:write' ) );

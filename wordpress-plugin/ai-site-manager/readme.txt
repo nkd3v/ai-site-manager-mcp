@@ -3,10 +3,10 @@ Contributors: site-owner
 Tags: rest-api, ai, api-key, content, configuration
 Requires at least: 6.6
 Requires PHP: 7.4
-Stable tag: 1.0.0
+Stable tag: 1.1.0
 License: GPLv2 or later
 
-Scoped API keys for AI-assisted WordPress content, media uploads, approved settings, and plugin management.
+Scoped API keys for AI-assisted WordPress content, media uploads, approved settings, and plugin/theme management.
 
 == Installation ==
 1. Upload ai-site-manager.zip through Plugins > Add New > Upload Plugin, then activate.
@@ -20,6 +20,7 @@ Scoped API keys for AI-assisted WordPress content, media uploads, approved setti
 * Upload images and other WordPress-approved media; set alt text, captions and featured images.
 * Read/write explicitly approved wp_options settings through WordPress APIs.
 * List, install, upload ZIPs, activate, deactivate, update and delete plugins on single-site WordPress.
+* List, install, upload ZIPs, activate, update and delete themes on single-site WordPress, with active/parent theme protection.
 * Authenticated live discovery, native resource schemas, and an AI usage guide.
 * Metadata-only API audit log with 30-day WP-Cron retention.
 
@@ -27,5 +28,7 @@ Scoped API keys for AI-assisted WordPress content, media uploads, approved setti
 See README.md for operational details and docs/AI-GUIDE.md for the full API guide.
 
 == Changelog ==
+= 1.1.0 =
+Add scoped theme listing, installation, ZIP upload, activation, updates and deletion.
 = 1.0.0 =
 Initial release.

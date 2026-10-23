@@ -57,7 +57,7 @@ status, _, html = request(admin, 'GET', PAGE)
 check(status == 200 and b'Create API key' in html, 'Admin panel failed')
 nonce = re.search(rb'name="_wpnonce" value="([^"]+)"', html).group(1).decode()
 user_id = json.loads(php("echo json_encode(get_user_by('login','aism-admin')->ID);"))
-scopes = [f'{group}:{action}' for group in ('content', 'media', 'taxonomies', 'comments', 'plugins') for action in ('read', 'write', 'delete')] + ['settings:read', 'settings:write']
+scopes = [f'{group}:{action}' for group in ('content', 'media', 'taxonomies', 'comments', 'plugins', 'themes') for action in ('read', 'write', 'delete')] + ['settings:read', 'settings:write']
 fields = [('_wpnonce', nonce), ('aism_action', 'create'), ('key_name', 'HTTP <b>assistant</b> & test'), ('user_id', str(user_id)), ('expiry_days', '1'), ('option_names', 'blogname\nblogdescription')] + [('scopes[]', s) for s in scopes]
 status, headers, html = request(admin, 'POST', PAGE, urllib.parse.urlencode(fields).encode())
 check(status == 200, 'Key creation UI failed')
@@ -91,6 +91,7 @@ def api(method, path, body=None, token=TOKEN, raw=None, extra=None):
 
 status, headers, discovery = api('GET', '/discovery')
 check(status == 200 and 'plugins:write' in discovery['key']['scopes'], 'Authenticated discovery failed')
+check('themes:write' in discovery['key']['scopes'], 'Admin theme scopes missing')
 check('no-store' in headers.get('Cache-Control', ''), 'API cache control missing')
 KEY_ID = discovery['key']['id']
 status, _, _ = api('GET', '/discovery', token='invalid')
@@ -185,6 +186,71 @@ api('POST', '/plugins/action', {'plugin': 'hello', 'action': 'delete'})
 status, _, installed = api('POST', '/plugins/install', {'slug': 'hello-dolly'})
 check(status == 201 and installed.get('status') == 'inactive', 'Repository plugin installation failed: ' + str(installed))
 api('POST', '/plugins/action', {'plugin': installed['plugin'], 'action': 'delete'})
+# Exercise theme installation, replacement protection, switching, updates and child-theme safety.
+status, _, themes = api('GET', '/themes')
+check(status == 200, 'Theme listing failed')
+original_theme = next(t['stylesheet'] for t in themes if t['status'] == 'active')
+theme_slug = 'aism-theme-' + uuid.uuid4().hex[:8]
+child_slug = theme_slug + '-child'
+
+
+def theme_zip(slug, version, parent=None):
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, 'w') as archive:
+        header = f'/*\nTheme Name: AISM fixture\nVersion: {version}\n'
+        if parent:
+            header += f'Template: {parent}\n'
+        archive.writestr(f'{slug}/style.css', header + '*/\n')
+        archive.writestr(f'{slug}/index.php', '<?php // Disposable fixture.\n')
+    return stream.getvalue()
+
+
+def upload_theme(slug, version='1.0.0', parent=None):
+    raw, extra = multipart('themezip', slug + '.zip', 'application/zip', theme_zip(slug, version, parent))
+    return api('POST', '/themes/upload', raw=raw, extra=extra)
+
+
+status, _, theme = upload_theme(theme_slug)
+check(status == 201 and theme.get('theme') == theme_slug and theme.get('status') == 'inactive', 'Theme upload failed: ' + str(theme))
+status, _, result = upload_theme(theme_slug, '9.0.0')
+check(status >= 400, 'Theme ZIP overwrote an installed theme')
+status, _, themes = api('GET', '/themes')
+check(any(t['stylesheet'] == theme_slug and t['version'] == '1.0.0' and t['status'] == 'inactive' for t in themes), 'Theme listing or replacement protection failed')
+status, _, theme = api('POST', '/themes/action', {'theme': theme_slug, 'action': 'activate'})
+check(status == 200 and theme.get('status') == 'active', 'Theme activation failed: ' + str(theme))
+status, _, result = api('POST', '/themes/action', {'theme': theme_slug, 'action': 'delete'})
+check(status == 409, 'Active theme deleted')
+encoded = base64.b64encode(theme_zip(theme_slug, '2.0.0')).decode()
+php("file_put_contents(ABSPATH.'aism-theme-update.zip',base64_decode('" + encoded + "'));")
+mu_code = """<?php
+add_filter('site_transient_update_themes',function($updates){
+ if(!is_object($updates)){$updates=new stdClass();}
+ $updates->response['THEME_SLUG']=['theme'=>'THEME_SLUG','new_version'=>'2.0.0','url'=>'https://example.test','package'=>'http://wordpress/aism-theme-update.zip'];
+ return $updates;
+});
+add_filter('http_request_host_is_external',function($external,$host){return $host==='wordpress' ? true : $external;},10,2);
+""".replace('THEME_SLUG', theme_slug)
+php("file_put_contents(WPMU_PLUGIN_DIR.'/aism-fixture-update.php',base64_decode('" + base64.b64encode(mu_code.encode()).decode() + "'));")
+status, _, updated = api('POST', '/themes/action', {'theme': theme_slug, 'action': 'update'})
+check(status == 200 and updated.get('updated') and updated.get('version') == '2.0.0' and updated.get('status') == 'active', 'Real theme update failed: ' + str(updated))
+php("unlink(WPMU_PLUGIN_DIR.'/aism-fixture-update.php'); unlink(ABSPATH.'aism-theme-update.zip');")
+status, _, result = api('POST', '/themes/action', {'theme': theme_slug, 'action': 'update'})
+check(status == 200 and result.get('updated') is False, 'Theme no-update response incorrect')
+status, _, child = upload_theme(child_slug, parent=theme_slug)
+check(status == 201 and child.get('status') == 'inactive', 'Child theme upload failed: ' + str(child))
+status, _, child = api('POST', '/themes/action', {'theme': child_slug, 'action': 'activate'})
+check(status == 200 and child.get('template') == theme_slug and child.get('status') == 'active', 'Child theme activation failed')
+for slug in (theme_slug, child_slug):
+    status, _, result = api('POST', '/themes/action', {'theme': slug, 'action': 'delete'})
+    check(status == 409, 'Active child or parent theme deleted')
+status, _, result = api('POST', '/themes/action', {'theme': original_theme, 'action': 'activate'})
+check(status == 200, 'Could not restore original theme')
+for slug in (child_slug, theme_slug):
+    status, _, result = api('POST', '/themes/action', {'theme': slug, 'action': 'delete'})
+    check(status == 200 and result.get('deleted'), 'Inactive theme deletion failed')
+status, _, installed = api('POST', '/themes/install', {'slug': 'twentytwentyone'})
+check(status == 201 and installed.get('status') == 'inactive', 'WordPress.org theme install failed: ' + str(installed))
+api('POST', '/themes/action', {'theme': installed['theme'], 'action': 'delete'})
 # Cleanup and revoke through the actual admin form.
 for media_id in (MEDIA_ID, raw_media['id']):
     api('DELETE', f'/wp/media/{media_id}?force=true')
@@ -207,4 +273,4 @@ fields = [('_wpnonce', nonce), ('aism_action', 'create'), ('key_name', 'Escalati
 status, _, html = request(restricted, 'POST', PAGE, urllib.parse.urlencode(fields).encode())
 check(status == 200 and b'You may issue keys only for yourself' in html and re.search(rb'value="aism_[a-f0-9]{64}"', html) is None, 'Key owner privilege escalation')
 php("require_once ABSPATH.'wp-admin/includes/user.php'; wp_delete_user(" + str(int(result)) + ");")
-print(f'PASS: {COUNT} HTTP assertions (including real image uploads, plugin upload/install/update/lifecycle, admin nonce and revocation)')
+print(f'PASS: {COUNT} HTTP assertions (including image uploads, plugin/theme upload/install/update/lifecycle, child-theme safety, admin nonce and revocation)')

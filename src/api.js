@@ -125,7 +125,7 @@ export class SiteManagerApi {
     if (!info.isFile() || info.size < 1 || info.size > this.maxUploadBytes) throw new Error('Upload must be a nonempty regular file within WP_AI_MAX_UPLOAD_BYTES (default 32 MiB).');
     const filename = basename(filePath).replace(/[\r\n"]/g, '_');
     const extension = filename.split('.').at(-1).toLowerCase();
-    if (field === 'pluginzip' && extension !== 'zip') throw new Error('Plugin uploads require a .zip file.');
+    if (['pluginzip', 'themezip'].includes(field) && extension !== 'zip') throw new Error('Plugin and theme uploads require a .zip file.');
     const data = await readFile(filePath);
     if (data.length > this.maxUploadBytes) throw new Error('File exceeds WP_AI_MAX_UPLOAD_BYTES.');
     const form = new FormData();

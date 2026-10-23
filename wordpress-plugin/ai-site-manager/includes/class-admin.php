@@ -58,7 +58,7 @@ final class AISM_Admin {
 		?>
 		<div class="wrap">
 		<h1>AI Site Manager</h1>
-		<p>Give an AI a dedicated key to manage content and approved settings. Each key runs with its selected WordPress user's current permissions and the permissions selected below. Keys only work with this plugin's API.</p>
+		<p>Give an AI a dedicated key to manage content, approved settings, plugins and themes. Each key runs with its selected WordPress user's current permissions and the permissions selected below. Keys only work with this plugin's API.</p>
 		<p><strong>API base URL:</strong> <code><?php echo esc_html( $base ); ?></code></p>
 		<?php if ( ! is_ssl() ) : ?><div class="notice notice-warning inline"><p>The API requires HTTPS. Configure HTTPS before sharing a key. See the README for the isolated local test exception.</p></div><?php endif; ?>
 		<?php if ( $error ) : ?><div class="notice notice-error inline"><p><?php echo esc_html( $error->get_error_message() ); ?></p></div><?php endif; ?>
@@ -76,7 +76,7 @@ final class AISM_Admin {
 		<tr><th scope="row"><label for="aism-user">Run as user</label></th><td><?php wp_dropdown_users( array( 'name' => 'user_id', 'id' => 'aism-user', 'selected' => get_current_user_id(), 'show_option_none' => false ) ); ?><p class="description">WordPress checks this user's permissions on every request. Changing their role or deleting the user changes or removes API access.</p></td></tr>
 		<tr><th scope="row"><label for="aism-expiry">Expires in days</label></th><td><input type="number" id="aism-expiry" name="expiry_days" min="1" max="365" value="30" required></td></tr>
 		<tr><th scope="row">Permissions</th><td><fieldset><legend class="screen-reader-text">API permissions</legend>
-		<?php foreach ( array( 'content' => 'Posts, pages and custom post types', 'media' => 'Media library (including image uploads)', 'taxonomies' => 'Categories, tags and custom taxonomies', 'comments' => 'Comments', 'settings' => 'Approved settings', 'plugins' => 'Plugins — edit allows installing and updating executable PHP code' ) as $group => $label ) : ?>
+		<?php foreach ( array( 'content' => 'Posts, pages and custom post types', 'media' => 'Media library (including image uploads)', 'taxonomies' => 'Categories, tags and custom taxonomies', 'comments' => 'Comments', 'settings' => 'Approved settings', 'plugins' => 'Plugins — edit allows installing and updating executable PHP code', 'themes' => 'Themes — edit allows installing/updating executable PHP code and changing the site appearance' ) as $group => $label ) : ?>
 		<p><strong><?php echo esc_html( $label ); ?></strong><br>
 		<?php foreach ( array( 'read' => 'Read', 'write' => 'Create / edit', 'delete' => 'Delete (including permanent deletion)' ) as $action => $action_label ) : if ( 'settings' === $group && 'delete' === $action ) { continue; } ?>
 		<label><input type="checkbox" name="scopes[]" value="<?php echo esc_attr( "$group:$action" ); ?>" <?php checked( 'read', $action ); ?>> <?php echo esc_html( $action_label ); ?></label>&nbsp;&nbsp;

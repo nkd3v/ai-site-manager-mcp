@@ -98,6 +98,7 @@ test('multipart upload sends actual file bytes and fields; file size and ZIP che
     } });
     assert.equal((await api.upload('/wp/media', file, 'file', { alt_text: 'Test image' })).status, 201);
     await assert.rejects(api.upload('/plugins/upload', file, 'pluginzip'), /\.zip/);
+    await assert.rejects(api.upload('/themes/upload', file, 'themezip'), /\.zip/);
     const limited = new SiteManagerApi({ base, key, maxUploadBytes: 2 });
     await assert.rejects(limited.upload('/wp/media', file, 'file'), /within WP_AI_MAX_UPLOAD_BYTES/);
   } finally { await rm(folder, { recursive: true }); }

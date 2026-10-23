@@ -1,12 +1,12 @@
 # AI Site Manager
 
-A WordPress plugin that gives AI clients scoped API keys for content, image uploads, approved configuration, and plugin management. Requires WordPress 6.6+ and PHP 7.4+.
+A WordPress plugin that gives AI clients scoped API keys for content, image uploads, approved configuration, and plugin/theme management. Requires WordPress 6.6+ and PHP 7.4+.
 
 ## Install and connect
 
 1. Upload `ai-site-manager.zip` in **Plugins → Add New → Upload Plugin**, then activate it (or copy this directory to `wp-content/plugins/ai-site-manager`).
 2. Open **Settings → AI Site Manager**.
-3. Name the key, choose the user it runs as, expiration (1–365 days), permissions, and exact option names it may access. Read permissions are selected by default; edits, deletions and plugin installation require explicit selection.
+3. Name the key, choose the user it runs as, expiration (1–365 days), permissions, and exact option names it may access. Read permissions are selected by default; edits, deletions and plugin/theme installation require explicit selection.
 4. Copy the full key from the creation response. Only its hash and a display prefix are stored. The secret cannot be recovered later.
 5. Give the AI the admin page's base URL, the secret through its secret storage, and [the AI guide](docs/AI-GUIDE.md). The admin page includes a copyable starter prompt. The same guide is available at authenticated `GET /guide`.
 
@@ -18,18 +18,21 @@ Keys work only under `ai-site-manager/v1`, using `Authorization: Bearer <key>` o
 - Image/media uploads, alt text, captions, featured images, and media deletion.
 - Existing or registered options approved by exact name for each key. Writes use `update_option`, sanitizers and cache handling. Sensitive core settings and credential-like option names are blocked.
 - Plugins: listing, WordPress.org installation, ZIP upload (new installs), activation, deactivation, updates from WordPress's update system, and deletion of inactive plugins. AI Site Manager itself must be managed through wp-admin. Plugin changes require a single-site installation; listing also supports multisite.
+- Themes: listing, WordPress.org installation, ZIP upload (new installs), activation, updates from WordPress's update system, and deletion of inactive themes. The active theme and its parent cannot be deleted. Switch to another theme to deactivate the current theme. Theme changes require a single-site installation; listing also supports multisite.
 
-Content and settings use WordPress's APIs and their permission checks, rather than raw SQL. There is no arbitrary database or PHP execution endpoint. Custom table access and private/unregistered metadata are not exposed. Third-party plugin configuration can be approved through its wp_options names; custom options may contain private data or control powerful behavior, so review each name before approval. Installing plugins inherently adds executable code and should be granted only to an AI authorized to do so.
+Content and settings use WordPress's APIs and their permission checks, rather than raw SQL. There is no arbitrary database or PHP execution endpoint. Custom table access and private/unregistered metadata are not exposed. Third-party plugin configuration can be approved through its wp_options names; custom options may contain private data or control powerful behavior, so review each name before approval. Installing plugins or themes inherently adds executable code and should be granted only to an AI authorized to do so.
+
+New theme scopes are `themes:read`, `themes:write` (installation, upload, activation, updates), and `themes:delete`. Existing keys are unchanged; issue a new key with the needed theme permissions. Read the [theme API guide](docs/AI-GUIDE.md#manage-themes) for endpoints and examples.
 
 ## Operations
 
 HTTPS is required. If behind a reverse proxy, ensure WordPress correctly recognizes the original HTTPS request through your trusted proxy configuration. Configure the host to preserve Authorization headers, or use X-AISM-Key. Do not expose the API through a cache that ignores `Cache-Control: private, no-store` or strips authentication headers. JSON keys in URLs are never accepted as authentication.
 
-WordPress file modification restrictions, upload limits, filesystem access, and plugin permissions apply. The API never accepts filesystem credentials. Use hosting tools to configure access when needed. Plugin uploads install inactive and do not replace an existing plugin; updates use packages advertised by WordPress's update system. Test significant plugin changes on a staging site and maintain backups as part of your normal site workflow.
+WordPress file modification restrictions, upload limits, filesystem access, and plugin/theme permissions apply. The API never accepts filesystem credentials. Use hosting tools to configure access when needed. Plugin and theme uploads install inactive and do not replace an existing installation; updates use packages advertised by WordPress's update system. Test significant plugin/theme changes on a staging site and maintain backups as part of your normal site workflow.
 
 Each authenticated dispatched request and valid-key permission denial is recorded with key/user IDs, method, route, status and UTC timestamp. Bodies, query strings, tokens and IP addresses are not recorded. Invalid-key and pre-authentication errors are not logged. Retention cleanup runs daily through WP-Cron; if cron is disabled, call WordPress cron through your normal scheduler. There is no built-in request rate limit or automatic content rollback. See the AI guide for retry and concurrency limitations.
 
-Keys and options are site-specific on multisite. Activate per site; plugin mutation through this API is intentionally unavailable on multisite. Users with `manage_options` can issue keys for themselves, or for users whose roles they can manage; scopes do not elevate those users' capabilities.
+Keys and options are site-specific on multisite. Activate per site; plugin and theme mutation through this API is intentionally unavailable on multisite. Users with `manage_options` can issue keys for themselves, or for users whose roles they can manage; scopes do not elevate those users' capabilities.
 
 ## Client and tests
 
@@ -47,4 +50,4 @@ Run [tests/README.md](tests/README.md) against a disposable WordPress installati
 
 ## Development references
 
-The gateway uses WordPress's [REST request dispatch](https://developer.wordpress.org/rest-api/requests/), [posts controller](https://developer.wordpress.org/reference/classes/wp_rest_posts_controller/), [plugin controller](https://developer.wordpress.org/reference/classes/wp_rest_plugins_controller/), and [plugin upgrader](https://developer.wordpress.org/reference/classes/plugin_upgrader/). Native schemas are read live, so AI clients should discover fields on each installation.
+The gateway uses WordPress's [REST request dispatch](https://developer.wordpress.org/rest-api/requests/), [posts controller](https://developer.wordpress.org/reference/classes/wp_rest_posts_controller/), [plugin controller](https://developer.wordpress.org/reference/classes/wp_rest_plugins_controller/), [plugin upgrader](https://developer.wordpress.org/reference/classes/plugin_upgrader/), [theme controller](https://developer.wordpress.org/reference/classes/wp_rest_themes_controller/), and [theme upgrader](https://developer.wordpress.org/reference/classes/theme_upgrader/). Native schemas are read live, so AI clients should discover fields on each installation.
