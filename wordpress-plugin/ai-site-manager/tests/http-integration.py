@@ -94,6 +94,85 @@ check(status == 200 and 'plugins:write' in discovery['key']['scopes'], 'Authenti
 check('themes:write' in discovery['key']['scopes'], 'Admin theme scopes missing')
 check('no-store' in headers.get('Cache-Control', ''), 'API cache control missing')
 KEY_ID = discovery['key']['id']
+# Exercise the real admin edit form and subsequent API requests using the same secret.
+status, _, html = request(admin, 'GET', PAGE + '&edit_key=' + str(KEY_ID))
+check(status == 200 and b'Edit API key permissions' in html and b'Save permissions' in html, 'Edit form missing')
+selected = re.findall(rb'name="scopes\[\]" value="([^"]+)"\s+checked=', html)
+check(set(s.decode() for s in selected) == set(scopes), 'Edit form did not load existing scopes')
+check(b'blogname\nblogdescription</textarea>' in html and TOKEN.encode() not in html, 'Edit options or secret display incorrect')
+snapshot_code = "$k=AISM_Store::get_key(" + str(KEY_ID) + "); unset($k['last_used_at']); echo wp_json_encode($k);"
+snapshot = json.loads(php(snapshot_code))
+
+
+def edit_permissions(new_scopes, options, nonce_value=nonce, key_id=KEY_ID, opener=admin, extra_fields=()):
+    values = [('_wpnonce', nonce_value), ('aism_action', 'update_permissions'), ('key_id', str(key_id)), ('option_names', options)]
+    values += [('scopes[]', s) for s in new_scopes] + list(extra_fields)
+    return request(opener, 'POST', PAGE, urllib.parse.urlencode(values).encode())
+
+
+status, _, _ = edit_permissions(['content:read'], '', nonce_value='invalid')
+check(status == 403 and json.loads(php(snapshot_code)) == snapshot, 'Bad nonce allowed permission edit')
+for invalid_scopes, options, message in [
+    ([], 'blogname', b'Select at least one permission'),
+    (['unknown:write'], '', b'Select at least one permission'),
+    (['content:read'], 'active_plugins', b'invalid or protected'),
+    (['content:read'], '\n'.join(['blogname'] * 101), b'at most 100'),
+]:
+    status, _, html = edit_permissions(invalid_scopes, options)
+    check(status == 200 and message in html and b'Save permissions' in html, 'Invalid edit lacks error or retry form')
+    check(json.loads(php(snapshot_code)) == snapshot, 'Invalid edit changed stored permissions')
+status, _, html = edit_permissions(['content:read', 'settings:read'], 'blogname')
+check(status == 200 and b'API key permissions saved' in html and TOKEN.encode() not in html, 'Permission save failed')
+status, _, current = api('GET', '/discovery')
+check(status == 200 and set(current['key']['scopes']) == {'content:read', 'settings:read'}, 'Discovery did not reflect saved scopes')
+check(api('POST', '/wp/posts', {'title': 'Denied'})[0] == 403, 'Removed write permission still works')
+check(api('GET', '/settings/blogdescription')[0] == 403, 'Removed approved option still works')
+check(api('GET', '/settings/blogname')[0] == 200, 'Retained approved option stopped working')
+# Crafted identity/expiry fields cannot change anything beyond permissions.
+status, _, html = edit_permissions(scopes, 'blogname\nblogdescription', extra_fields=[('user_id', '0'), ('expiry_days', '365'), ('key_name', 'Tampered')])
+check(status == 200 and b'API key permissions saved' in html, 'Restoring permissions failed')
+check(json.loads(php(snapshot_code)) == snapshot, 'Permission edit changed key identity, expiry or credentials')
+check(api('GET', '/settings/blogdescription')[0] == 200, 'Added approved option not immediately available')
+status, _, html = edit_permissions(scopes, 'blogname\nblogdescription')
+check(status == 200 and b'API key permissions saved' in html, 'Unchanged permissions rejected')
+status, _, html = edit_permissions(scopes, '', key_id=0)
+check(status == 200 and b'Only active API keys can be edited' in html, 'Missing key edit accepted')
+# A settings-only administrator must not edit a full administrator's key,
+# even when the submitted owner field is their own ID.
+restricted_id = int(php("$u=wp_create_user('aism-edit-settings','isolated-test-password','edit-settings@example.test'); $user=new WP_User($u); $user->set_role('subscriber'); $user->add_cap('manage_options'); echo $u;"))
+edit_cookies = http.cookiejar.CookieJar()
+edit_user = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(edit_cookies))
+request(edit_user, 'GET', BASE + '/wp-login.php')
+request(edit_user, 'POST', BASE + '/wp-login.php', urllib.parse.urlencode({'log': 'aism-edit-settings', 'pwd': 'isolated-test-password', 'testcookie': '1', 'redirect_to': PAGE}).encode())
+_, _, html = request(edit_user, 'GET', PAGE + '&edit_key=' + str(KEY_ID))
+check(b'You may manage key permissions only for yourself' in html and b'Save permissions' not in html, 'Unauthorized edit form exposed')
+restricted_nonce = re.search(rb'name="_wpnonce" value="([^"]+)"', html).group(1).decode()
+status, _, html = edit_permissions(['plugins:write'], '', nonce_value=restricted_nonce, opener=edit_user, extra_fields=[('user_id', str(restricted_id))])
+check(status == 200 and b'You may manage key permissions only for yourself' in html, 'Owner privilege check bypassed')
+check(json.loads(php(snapshot_code)) == snapshot, 'Unauthorized user changed permissions')
+# This user may still edit their own key; native capabilities remain the ceiling.
+own_key = json.loads(php("echo wp_json_encode(AISM_Store::create_key('Own key'," + str(restricted_id) + ",array('content:read'),array(),1));"))
+status, _, html = edit_permissions(['plugins:write'], '', nonce_value=restricted_nonce, key_id=own_key['id'], opener=edit_user)
+check(status == 200 and b'API key permissions saved' in html, 'Own key edit denied')
+check(api('POST', '/plugins/install', {'slug': 'hello-dolly'}, token=own_key['token'])[0] == 403, 'Edited scope bypassed native capability')
+php("require_once ABSPATH.'wp-admin/includes/user.php'; wp_delete_user(" + str(restricted_id) + ");")
+status, _, _ = edit_permissions(scopes, 'blogname', opener=plain)
+check(json.loads(php(snapshot_code)) == snapshot, 'Anonymous permission edit succeeded')
+# Inactive keys cannot be edited or reactivated through crafted POSTs or links.
+for inactive in ('expired', 'revoked'):
+    inactive_key = json.loads(php("echo wp_json_encode(AISM_Store::create_key('Inactive'," + str(user_id) + ",array('content:read'),array(),1));"))
+    if inactive == 'expired':
+        php("global $wpdb; $wpdb->update(AISM_Store::table('keys'),array('expires_at'=>'2000-01-01 00:00:00'),array('id'=>" + str(inactive_key['id']) + "));")
+    else:
+        php("AISM_Store::revoke(" + str(inactive_key['id']) + ");")
+    status, _, html = edit_permissions(['themes:write'], '', key_id=inactive_key['id'])
+    check(status == 200 and b'Only active API keys can be edited' in html, 'Inactive key edit accepted')
+    _, _, html = request(admin, 'GET', PAGE + '&edit_key=' + str(inactive_key['id']))
+    check(b'Save permissions' not in html, 'Inactive key edit form exposed')
+    check(api('GET', '/discovery', token=inactive_key['token'])[0] == 401, 'Inactive key reactivated')
+if '--keys-only' in sys.argv:
+    print(f'PASS: {COUNT} HTTP assertions (key creation, live permission edits, validation, CSRF, ownership and inactive keys)')
+    sys.exit(0)
 status, _, _ = api('GET', '/discovery', token='invalid')
 check(status == 401, 'Invalid key accepted')
 # Credential fallback header, query credentials rejected, no authentication leakage to core.
@@ -317,6 +396,6 @@ _, _, html = request(restricted, 'GET', PAGE)
 nonce = re.search(rb'name="_wpnonce" value="([^"]+)"', html).group(1).decode()
 fields = [('_wpnonce', nonce), ('aism_action', 'create'), ('key_name', 'Escalation attempt'), ('user_id', str(user_id)), ('expiry_days', '1'), ('scopes[]', 'plugins:write')]
 status, _, html = request(restricted, 'POST', PAGE, urllib.parse.urlencode(fields).encode())
-check(status == 200 and b'You may issue keys only for yourself' in html and re.search(rb'value="aism_[a-f0-9]{64}"', html) is None, 'Key owner privilege escalation')
+check(status == 200 and b'You may manage key permissions only for yourself' in html and re.search(rb'value="aism_[a-f0-9]{64}"', html) is None, 'Key owner privilege escalation')
 php("require_once ABSPATH.'wp-admin/includes/user.php'; wp_delete_user(" + str(int(result)) + ");")
 print(f'PASS: {COUNT} HTTP assertions (including image uploads, plugin/theme upload/install/update/lifecycle, child-theme safety, admin nonce and revocation)')

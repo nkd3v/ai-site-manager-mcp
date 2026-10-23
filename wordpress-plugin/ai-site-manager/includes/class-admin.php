@@ -5,12 +5,17 @@ final class AISM_Admin {
 	private $created = null;
 	private $error = null;
 	private $notice = '';
+	private $editing = null;
 	public function __construct() {
 		add_action( 'admin_menu', function () { add_options_page( 'AI Site Manager', 'AI Site Manager', 'manage_options', 'ai-site-manager', array( $this, 'render' ) ); } );
 		add_filter( 'plugin_action_links_' . plugin_basename( AISM_DIR . 'ai-site-manager.php' ), function ( $links ) { array_unshift( $links, '<a href="' . esc_url( admin_url( 'options-general.php?page=ai-site-manager' ) ) . '">API keys</a>' ); return $links; } );
 		add_action( 'admin_init', function () {
 			if ( isset( $_GET['page'] ) && 'ai-site-manager' === $_GET['page'] ) { nocache_headers(); header( 'Referrer-Policy: no-referrer' ); $this->process(); }
 		} );
+	}
+
+	private function can_manage_owner( $owner ) {
+		return get_current_user_id() === (int) $owner || ( current_user_can( 'promote_users' ) && current_user_can( 'edit_user', $owner ) );
 	}
 
 	private function process() {
@@ -21,16 +26,26 @@ final class AISM_Admin {
 		if ( 'POST' === $_SERVER['REQUEST_METHOD'] ) {
 			check_admin_referer( 'aism_manage_keys' );
 			$action = isset( $_POST['aism_action'] ) ? sanitize_key( $_POST['aism_action'] ) : '';
-			if ( 'create' === $action ) {
+			if ( 'create' === $action || 'update_permissions' === $action ) {
 				$options = isset( $_POST['option_names'] ) && is_string( $_POST['option_names'] ) ? preg_split( '/[\s,]+/', trim( wp_unslash( $_POST['option_names'] ) ), -1, PREG_SPLIT_NO_EMPTY ) : array();
 				$scopes = isset( $_POST['scopes'] ) && is_array( $_POST['scopes'] ) ? array_filter( wp_unslash( $_POST['scopes'] ), 'is_string' ) : array();
 				$name = isset( $_POST['key_name'] ) && is_string( $_POST['key_name'] ) ? wp_unslash( $_POST['key_name'] ) : '';
-				$owner = absint( $_POST['user_id'] ?? 0 );
-				if ( get_current_user_id() !== $owner && ( ! current_user_can( 'promote_users' ) || ! current_user_can( 'edit_user', $owner ) ) ) { $error = new WP_Error( 'aism_owner_forbidden', 'You may issue keys only for yourself or users whose roles you can manage.' ); }
+				$key = 'update_permissions' === $action ? AISM_Store::get_key( absint( $_POST['key_id'] ?? 0 ) ) : null;
+				$owner = 'create' === $action ? absint( $_POST['user_id'] ?? 0 ) : (int) ( $key['user_id'] ?? 0 );
+				if ( 'update_permissions' === $action && ( ! $key || $key['revoked_at'] || $key['expires_at'] <= gmdate( 'Y-m-d H:i:s' ) ) ) { $error = new WP_Error( 'aism_inactive_key', 'Only active API keys can be edited.' ); }
+				elseif ( ! $this->can_manage_owner( $owner ) ) { $error = new WP_Error( 'aism_owner_forbidden', 'You may manage key permissions only for yourself or users whose roles you can manage.' ); }
 				elseif ( count( $options ) > 100 ) { $error = new WP_Error( 'aism_options_limit', 'Approve at most 100 option names per key.' ); }
+				elseif ( 'update_permissions' === $action ) {
+					$result = AISM_Store::update_permissions( $key['id'], $scopes, $options );
+					if ( is_wp_error( $result ) ) { $error = $result; }
+					else { $notice = 'API key permissions saved. Changes apply to the next API request; the existing key still works.'; }
+				}
 				else {
 					$created = AISM_Store::create_key( $name, $owner, $scopes, $options, absint( $_POST['expiry_days'] ?? 0 ) );
 					if ( is_wp_error( $created ) ) { $error = $created; $created = null; }
+				}
+				if ( $error && $key && 'update_permissions' === $action && 'aism_owner_forbidden' !== $error->get_error_code() && 'aism_inactive_key' !== $error->get_error_code() ) {
+					$this->editing = array_merge( $key, array( 'scopes' => wp_json_encode( $scopes ), 'option_names' => wp_json_encode( $options ) ) );
 				}
 			} elseif ( 'revoke' === $action ) {
 				$result = AISM_Store::revoke( absint( $_POST['key_id'] ?? 0 ) );
@@ -49,6 +64,17 @@ final class AISM_Admin {
 		$created = $this->created;
 		$error = $this->error;
 		$notice = $this->notice;
+		$editing = $this->editing;
+		if ( ! $editing && isset( $_GET['edit_key'] ) && is_scalar( $_GET['edit_key'] ) ) {
+			$editing = AISM_Store::get_key( absint( $_GET['edit_key'] ) );
+			if ( ! $editing || $editing['revoked_at'] || $editing['expires_at'] <= gmdate( 'Y-m-d H:i:s' ) ) {
+				$editing = null;
+				$error = new WP_Error( 'aism_inactive_key', 'Only active API keys can be edited.' );
+			} elseif ( ! $this->can_manage_owner( $editing['user_id'] ) ) {
+				$editing = null;
+				$error = new WP_Error( 'aism_owner_forbidden', 'You may manage key permissions only for yourself or users whose roles you can manage.' );
+			}
+		}
 		$total = (int) $wpdb->get_var( 'SELECT COUNT(*) FROM ' . AISM_Store::table( 'keys' ) );
 		$pages = max( 1, (int) ceil( $total / 100 ) );
 		$page = min( $pages, max( 1, isset( $_GET['key_page'] ) && is_scalar( $_GET['key_page'] ) ? absint( $_GET['key_page'] ) : 1 ) );
@@ -68,28 +94,36 @@ final class AISM_Admin {
 		<input type="text" class="large-text code" readonly aria-label="New API key" value="<?php echo esc_attr( $created['token'] ); ?>" autocomplete="off">
 		<p>Give your AI the API base URL, this key through its secret storage, and the AI guide below. Avoid pasting the key into public chats or source code.</p></div>
 		<?php endif; ?>
-		<h2>Create API key</h2>
+		<h2><?php echo $editing ? 'Edit API key permissions' : 'Create API key'; ?></h2>
 		<form method="post" action="<?php echo esc_url( admin_url( 'options-general.php?page=ai-site-manager' ) ); ?>">
-		<?php wp_nonce_field( 'aism_manage_keys' ); ?><input type="hidden" name="aism_action" value="create">
+		<?php wp_nonce_field( 'aism_manage_keys' ); ?><input type="hidden" name="aism_action" value="<?php echo $editing ? 'update_permissions' : 'create'; ?>">
+		<?php if ( $editing ) : ?>
+		<input type="hidden" name="key_id" value="<?php echo (int) $editing['id']; ?>">
+		<p>Editing <strong><?php echo esc_html( $editing['name'] ); ?></strong> (<code><?php echo esc_html( $editing['key_prefix'] ); ?>…</code>). Changes apply to the next API request. The key, user and expiry stay the same.</p>
+		<?php endif; ?>
 		<table class="form-table" role="presentation"><tbody>
+		<?php if ( ! $editing ) : ?>
 		<tr><th scope="row"><label for="aism-name">Name</label></th><td><input id="aism-name" name="key_name" class="regular-text" maxlength="190" required placeholder="Content assistant"></td></tr>
 		<tr><th scope="row"><label for="aism-user">Run as user</label></th><td><?php wp_dropdown_users( array( 'name' => 'user_id', 'id' => 'aism-user', 'selected' => get_current_user_id(), 'show_option_none' => false ) ); ?><p class="description">WordPress checks this user's permissions on every request. Changing their role or deleting the user changes or removes API access.</p></td></tr>
 		<tr><th scope="row"><label for="aism-expiry">Expires in days</label></th><td><input type="number" id="aism-expiry" name="expiry_days" min="1" max="365" value="30" required></td></tr>
+		<?php endif; ?>
 		<tr><th scope="row">Permissions</th><td><fieldset><legend class="screen-reader-text">API permissions</legend>
 		<?php foreach ( array( 'content' => 'Posts, pages and custom post types', 'media' => 'Media library (including image uploads)', 'taxonomies' => 'Categories, tags and custom taxonomies', 'comments' => 'Comments', 'settings' => 'Approved settings', 'plugins' => 'Plugins — edit allows installing and updating executable PHP code', 'themes' => 'Themes — edit allows installing/updating executable PHP code and changing the site appearance', 'migration' => 'Site migration — read exports ALL content (including private posts, comment emails and plugin/theme code); edit imports content, media and site settings into this site; delete rolls back imported content' ) as $group => $label ) : ?>
 		<p><strong><?php echo esc_html( $label ); ?></strong><br>
 		<?php foreach ( array( 'read' => 'Read', 'write' => 'Create / edit', 'delete' => 'Delete (including permanent deletion)' ) as $action => $action_label ) : if ( 'settings' === $group && 'delete' === $action ) { continue; } ?>
-		<label><input type="checkbox" name="scopes[]" value="<?php echo esc_attr( "$group:$action" ); ?>" <?php checked( 'read' === $action && 'migration' !== $group ); ?>> <?php echo esc_html( $action_label ); ?></label>&nbsp;&nbsp;
+		<label><input type="checkbox" name="scopes[]" value="<?php echo esc_attr( "$group:$action" ); ?>" <?php checked( $editing ? in_array( "$group:$action", (array) json_decode( $editing['scopes'], true ), true ) : 'read' === $action && 'migration' !== $group ); ?>> <?php echo esc_html( $action_label ); ?></label>&nbsp;&nbsp;
 		<?php endforeach; ?></p><?php endforeach; ?>
 		</fieldset><p class="description">Read, edit and delete are independent. Edit permits publication when the selected user can publish. Enable only what this AI needs.</p></td></tr>
-		<tr><th scope="row"><label for="aism-options">Approved option names</label></th><td><textarea id="aism-options" name="option_names" class="large-text code" rows="10"><?php echo esc_textarea( implode( "\n", AISM_Store::default_options() ) ); ?></textarea>
+		<tr><th scope="row"><label for="aism-options">Approved option names</label></th><td><textarea id="aism-options" name="option_names" class="large-text code" rows="10"><?php echo esc_textarea( implode( "\n", $editing ? (array) json_decode( $editing['option_names'], true ) : AISM_Store::default_options() ) ); ?></textarea>
 		<p class="description">One exact wp_options option_name per line (up to 100). Applies only to this key. Review custom options before approving them: they may contain private data or change plugin behavior. Credentials, user roles, site addresses, plugin activation and security settings are blocked. Settings access also requires the selected user to have manage_options.</p></td></tr>
-		</tbody></table><?php submit_button( 'Create API key' ); ?></form>
-		<h2>API keys</h2><p>Dates are UTC. Revoked and expired keys stop working immediately. Page <?php echo (int) $page; ?> of <?php echo (int) $pages; ?> (<?php echo (int) $total; ?> keys).</p>
+		</tbody></table><?php submit_button( $editing ? 'Save permissions' : 'Create API key' ); ?>
+		<?php if ( $editing ) : ?><p><a class="button" href="<?php echo esc_url( admin_url( 'options-general.php?page=ai-site-manager' ) ); ?>">Cancel</a></p><?php endif; ?></form>
+		<h2>API keys</h2><p>Dates are UTC. Edit permissions on active keys without replacing the secret. Revoked and expired keys stop working immediately. Page <?php echo (int) $page; ?> of <?php echo (int) $pages; ?> (<?php echo (int) $total; ?> keys).</p>
 		<table class="widefat striped"><thead><tr><th>Name / prefix</th><th>User</th><th>Permissions</th><th>Expires / last used (UTC)</th><th>Status</th><th>Action</th></tr></thead><tbody>
 		<?php if ( ! $keys ) : ?><tr><td colspan="6">No keys yet.</td></tr><?php endif; ?>
 		<?php foreach ( $keys as $key ) : $user = get_userdata( (int) $key['user_id'] ); $status = $key['revoked_at'] ? 'Revoked' : ( $key['expires_at'] <= gmdate( 'Y-m-d H:i:s' ) ? 'Expired' : 'Active' ); ?>
 		<tr><td><?php echo esc_html( $key['name'] ); ?><br><code><?php echo esc_html( $key['key_prefix'] ); ?>…</code></td><td><?php echo esc_html( $user ? $user->user_login : 'Deleted user' ); ?></td><td><?php echo esc_html( implode( ', ', (array) json_decode( $key['scopes'], true ) ) ); ?></td><td><?php echo esc_html( $key['expires_at'] ); ?><br><?php echo esc_html( $key['last_used_at'] ?: 'Never used' ); ?></td><td><?php echo esc_html( $status ); ?></td><td>
+		<?php if ( 'Active' === $status && $this->can_manage_owner( $key['user_id'] ) ) : ?><p><a class="button" href="<?php echo esc_url( add_query_arg( array( 'edit_key' => $key['id'], 'key_page' => $page ), admin_url( 'options-general.php?page=ai-site-manager' ) ) ); ?>">Edit permissions</a></p><?php endif; ?>
 		<?php if ( ! $key['revoked_at'] ) : ?><form method="post" action="<?php echo esc_url( admin_url( 'options-general.php?page=ai-site-manager' ) ); ?>"><?php wp_nonce_field( 'aism_manage_keys' ); ?><input type="hidden" name="aism_action" value="revoke"><input type="hidden" name="key_id" value="<?php echo (int) $key['id']; ?>"><button type="submit" class="button">Revoke</button></form><?php endif; ?>
 		</td></tr><?php endforeach; ?></tbody></table>
 		<p><?php if ( $page > 1 ) : ?><a class="button" href="<?php echo esc_url( add_query_arg( 'key_page', $page - 1, admin_url( 'options-general.php?page=ai-site-manager' ) ) ); ?>">Newer keys</a><?php endif; ?>

@@ -3,7 +3,7 @@ Contributors: site-owner
 Tags: rest-api, ai, api-key, content, configuration
 Requires at least: 6.6
 Requires PHP: 7.4
-Stable tag: 1.4.0
+Stable tag: 1.4.1
 License: GPLv2 or later
 
 Scoped API keys for AI-assisted WordPress content, media uploads, approved settings, plugin/theme management, and site migration.
@@ -15,7 +15,7 @@ Scoped API keys for AI-assisted WordPress content, media uploads, approved setti
 4. Copy the displayed key once. Give your AI the API base URL, secret key, and the guide/starter prompt from the admin page.
 
 == Features ==
-* Independent read/edit/delete scopes, WordPress capabilities, HTTPS, expiring and revocable hashed keys.
+* Independent read/edit/delete scopes, editable live key permissions, WordPress capabilities, HTTPS, expiring and revocable hashed keys.
 * Posts, pages, REST-exposed custom post types, registered metadata, categories, tags, comments and revisions.
 * Upload images and other WordPress-approved media; set alt text, captions and featured images.
 * Read/write explicitly approved wp_options settings through WordPress APIs.
@@ -30,6 +30,8 @@ Scoped API keys for AI-assisted WordPress content, media uploads, approved setti
 See README.md for operational details and docs/AI-GUIDE.md for the full API guide.
 
 == Changelog ==
+= 1.4.1 =
+Edit active API key permissions and approved option names from Settings without replacing the key. Changes apply on the next API request; owner checks, protected settings, expiry and revocation remain enforced.
 = 1.4.0 =
 Add site-to-site migration: manifest, paged export, original media and plugin/theme package downloads, idempotent import with source→target ID mapping, a finalize pass that remaps IDs in blocks, shortcodes, metadata and settings and rewrites URLs, status, and rollback. New migration:read, migration:write and migration:delete scopes.
 = 1.3.0 =

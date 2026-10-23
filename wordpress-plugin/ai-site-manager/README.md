@@ -10,7 +10,7 @@ A WordPress plugin that gives AI clients scoped API keys for content, image uplo
 4. Copy the full key from the creation response. Only its hash and a display prefix are stored. The secret cannot be recovered later.
 5. Give the AI the admin page's base URL, the secret through its secret storage, and [the AI guide](docs/AI-GUIDE.md). The admin page includes a copyable starter prompt. The same guide is available at authenticated `GET /guide`.
 
-Keys work only under `ai-site-manager/v1`, using `Authorization: Bearer <key>` or `X-AISM-Key: <key>`. Login cookies alone do not grant access to these endpoints. The key owner must still have the WordPress capability needed for each action. Revoke keys in the same admin page. Disabling the plugin disables its endpoints; uninstalling deletes its keys and audit logs while preserving site content and settings.
+Keys work only under `ai-site-manager/v1`, using `Authorization: Bearer <key>` or `X-AISM-Key: <key>`. Login cookies alone do not grant access to these endpoints. The key owner must still have the WordPress capability needed for each action. From version 1.4.1, choose **Edit permissions** beside an active key to change its scopes and approved option names, then **Save permissions**. Changes apply to the next API request using the same secret; its owner and expiry stay the same. Only administrators managing their own keys or users whose roles they can manage may edit permissions. Revoked and expired keys cannot be edited. Revoke keys in the same admin page. Disabling the plugin disables its endpoints; uninstalling deletes its keys and audit logs while preserving site content and settings.
 
 ## What the API manages
 
@@ -24,7 +24,7 @@ Content and settings use WordPress's APIs and their permission checks, rather th
 
 - Migration (1.4.0+): export a site's content, original media files, plugin/theme packages and portable settings, and import them into another AI Site Manager site with ID remapping, URL rewriting, incremental re-sync and rollback. See the [migration guide](docs/AI-GUIDE.md#migrate-between-sites-140).
 
-New theme scopes are `themes:read`, `themes:write` (installation, upload, activation, updates), and `themes:delete`. Existing keys are unchanged; issue a new key with the needed theme permissions. Read the [theme API guide](docs/AI-GUIDE.md#manage-themes) for endpoints and examples.
+New theme scopes are `themes:read`, `themes:write` (installation, upload, activation, updates), and `themes:delete`. Existing keys are unchanged until you grant the needed theme permissions through **Edit permissions** (1.4.1+), or issue a new key. Read the [theme API guide](docs/AI-GUIDE.md#manage-themes) for endpoints and examples.
 
 ## Operations
 

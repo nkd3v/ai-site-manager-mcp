@@ -29,6 +29,38 @@ wp_set_current_user( 0 );
 $full = key_for( $admin->ID, AISM_Store::scopes(), AISM_Store::default_options() );
 $read = key_for( $admin->ID, array( 'content:read', 'settings:read', 'plugins:read' ), array( 'blogname' ) );
 $write = key_for( $admin->ID, array( 'content:write', 'settings:write', 'plugins:write' ), array( 'blogname' ) );
+// Editing a live key changes the next request without rotating credentials.
+$editable = key_for( $admin->ID, array( 'content:read', 'settings:read' ), array( 'blogname' ) );
+$before_edit = AISM_Store::get_key( $editable['id'] );
+check( call_api( 'GET', '/settings/blogname', $editable['token'] )->get_status() === 200, 'Initial setting grant missing' );
+check( call_api( 'GET', '/themes', $editable['token'] )->get_status() === 403, 'Initial theme permission too broad' );
+check( true === AISM_Store::update_permissions( $editable['id'], array( 'themes:read', 'settings:read' ), array( 'blogdescription' ) ), 'Permission update failed' );
+check( call_api( 'GET', '/themes', $editable['token'] )->get_status() === 200, 'Added permission not live' );
+check( call_api( 'GET', '/wp/posts', $editable['token'] )->get_status() === 403, 'Removed permission still works' );
+check( call_api( 'GET', '/settings/blogname', $editable['token'] )->get_status() === 403, 'Removed option still allowed' );
+check( call_api( 'GET', '/settings/blogdescription', $editable['token'] )->get_status() === 200, 'Added option not live' );
+$after_edit = AISM_Store::get_key( $editable['id'] );
+foreach ( array( 'id', 'name', 'key_hash', 'key_prefix', 'user_id', 'created_at', 'expires_at', 'revoked_at' ) as $field ) {
+	check( $before_edit[ $field ] === $after_edit[ $field ], 'Permission update changed ' . $field );
+}
+check( true === AISM_Store::update_permissions( $editable['id'], array( 'themes:read', 'settings:read' ), array( 'blogdescription' ) ), 'Unchanged permissions rejected' );
+foreach ( array(
+	array( array(), array( 'blogname' ) ),
+	array( array( 'unknown:write' ), array() ),
+	array( array( 'content:read' ), array( 'active_plugins' ) ),
+	array( array( 'content:read' ), array_fill( 0, 101, 'blogname' ) ),
+) as $invalid ) {
+	check( is_wp_error( AISM_Store::update_permissions( $editable['id'], $invalid[0], $invalid[1] ) ), 'Invalid permissions accepted' );
+	check( AISM_Store::get_key( $editable['id'] ) === $after_edit, 'Rejected edit changed stored key' );
+}
+AISM_Store::revoke( $editable['id'] );
+check( is_wp_error( AISM_Store::update_permissions( $editable['id'], array( 'content:read' ), array() ) ), 'Revoked key edited' );
+check( false === AISM_Store::authenticate( $editable['token'] ), 'Revoked key reactivated by edit' );
+$expired_edit = key_for( $admin->ID, array( 'content:read' ) );
+$GLOBALS['wpdb']->update( AISM_Store::table( 'keys' ), array( 'expires_at' => '2000-01-01 00:00:00' ), array( 'id' => $expired_edit['id'] ) );
+check( is_wp_error( AISM_Store::update_permissions( $expired_edit['id'], array( 'themes:read' ), array() ) ), 'Expired key edited' );
+check( false === AISM_Store::authenticate( $expired_edit['token'] ), 'Expired key reactivated by edit' );
+check( is_wp_error( AISM_Store::update_permissions( 0, array( 'content:read' ), array() ) ), 'Missing key edited' );
 check( call_api( 'GET', '/discovery' )->get_status() === 401, 'Missing key accepted' );
 check( call_api( 'GET', '/discovery', 'aism_' . str_repeat( '0', 64 ) )->get_status() === 401, 'Unknown key accepted' );
 check( call_api( 'GET', '/discovery', $full['token'] )->get_status() === 200, 'Discovery failed' );

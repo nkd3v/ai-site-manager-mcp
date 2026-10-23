@@ -87,18 +87,50 @@ final class AISM_Store {
 		if ( ! $user || ! user_can( $user, 'read' ) || '' === $name || strlen( $name ) > 190 || $days < 1 || $days > 365 ) {
 			return new WP_Error( 'aism_invalid_key', 'Choose a name, an existing user, and an expiry of 1–365 days.' );
 		}
-		$scopes = array_values( array_intersect( self::scopes(), $scopes ) );
-		if ( ! $scopes ) { return new WP_Error( 'aism_invalid_scopes', 'Select at least one permission.' ); }
-		foreach ( $options as $option ) {
-			if ( ! self::option_allowed( $option ) ) { return new WP_Error( 'aism_forbidden_option', 'An option name is invalid or protected: ' . $option ); }
-		}
+		$permissions = self::validate_permissions( $scopes, $options );
+		if ( is_wp_error( $permissions ) ) { return $permissions; }
 		$token = 'aism_' . bin2hex( random_bytes( 32 ) );
 		$ok = $wpdb->insert( self::table( 'keys' ), array(
 			'name' => $name, 'key_hash' => hash( 'sha256', $token ), 'key_prefix' => substr( $token, 0, 17 ),
-			'user_id' => $user_id, 'scopes' => wp_json_encode( $scopes ), 'option_names' => wp_json_encode( array_values( array_unique( $options ) ) ),
+			'user_id' => $user_id, 'scopes' => wp_json_encode( $permissions['scopes'] ), 'option_names' => wp_json_encode( $permissions['option_names'] ),
 			'created_at' => gmdate( 'Y-m-d H:i:s' ), 'expires_at' => gmdate( 'Y-m-d H:i:s', time() + $days * DAY_IN_SECONDS ),
 		) );
 		return $ok ? array( 'id' => (int) $wpdb->insert_id, 'token' => $token ) : new WP_Error( 'aism_storage_error', 'Could not save the API key.' );
+	}
+
+	private static function validate_permissions( $scopes, $options ) {
+		$scopes = array_values( array_intersect( self::scopes(), $scopes ) );
+		if ( ! $scopes ) { return new WP_Error( 'aism_invalid_scopes', 'Select at least one permission.' ); }
+		if ( count( $options ) > 100 ) { return new WP_Error( 'aism_options_limit', 'Approve at most 100 option names per key.' ); }
+		foreach ( $options as $option ) {
+			if ( ! self::option_allowed( $option ) ) { return new WP_Error( 'aism_forbidden_option', 'An option name is invalid or protected: ' . $option ); }
+		}
+		return array( 'scopes' => $scopes, 'option_names' => array_values( array_unique( $options ) ) );
+	}
+
+	public static function get_key( $id ) {
+		global $wpdb;
+		return $wpdb->get_row( $wpdb->prepare( 'SELECT * FROM ' . self::table( 'keys' ) . ' WHERE id = %d', $id ), ARRAY_A );
+	}
+
+	/** Update only permissions; never rotate the secret or reactivate an inactive key. */
+	public static function update_permissions( $id, $scopes, $options ) {
+		global $wpdb;
+		$permissions = self::validate_permissions( $scopes, $options );
+		if ( is_wp_error( $permissions ) ) { return $permissions; }
+		$result = $wpdb->query( $wpdb->prepare(
+			'UPDATE ' . self::table( 'keys' ) . ' SET scopes = %s, option_names = %s WHERE id = %d AND revoked_at IS NULL AND expires_at > %s',
+			wp_json_encode( $permissions['scopes'] ), wp_json_encode( $permissions['option_names'] ), $id, gmdate( 'Y-m-d H:i:s' )
+		) );
+		if ( false === $result ) { return new WP_Error( 'aism_storage_error', 'Could not save the API key permissions.' ); }
+		// MySQL also returns zero when the submitted permissions are unchanged.
+		if ( 0 === $result ) {
+			$key = self::get_key( $id );
+			if ( ! $key || $key['revoked_at'] || $key['expires_at'] <= gmdate( 'Y-m-d H:i:s' ) ) {
+				return new WP_Error( 'aism_inactive_key', 'Only active API keys can be edited.' );
+			}
+		}
+		return true;
 	}
 
 	public static function authenticate( $token ) {
