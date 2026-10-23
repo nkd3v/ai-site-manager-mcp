@@ -6,7 +6,7 @@ This is a local stdio MCP adapter. The AI Site Manager plugin must already be in
 
 ## Install the WordPress companion
 
-1. Download [ai-site-manager.zip from the release](https://github.com/nkd3v/ai-site-manager-mcp/releases/latest/download/ai-site-manager.zip).
+1. Download [ai-site-manager.zip from the release](https://github.com/nkd3v/ai-site-manager-mcp/releases/latest/download/ai-site-manager.zip), or use the [ZIP committed in this repository](releases/ai-site-manager.zip?raw=true).
 2. Upload it in **WordPress → Plugins → Add New → Upload Plugin**, then activate it. Requires WordPress 6.6+ and PHP 7.4+.
 3. Open **Settings → AI Site Manager**. Create an expiring key, choose its user and scopes, and approve exact option names if settings access is needed.
 4. Save the one-time key privately and copy the API base URL. Configure the MCP client below.
@@ -109,6 +109,12 @@ npm ci
 npm run check
 npm test
 npm pack --dry-run
+```
+
+The upload ZIP is built from an explicit allowlist of companion files; tests, credentials and local artifacts are excluded. To rebuild and verify it, install [uv](https://docs.astral.sh/uv/) and run:
+
+```sh
+uv run --system-certs scripts/package-plugin.py
 ```
 
 Tests exercise credential isolation, URL handling, pagination, redirects, uncertain writes, upload limits and real MCP tool/resource calls against simulated API responses. They never modify a live WordPress site. The source is plain JavaScript with no build or install scripts. Package contents are explicitly limited to source, documentation and license.
