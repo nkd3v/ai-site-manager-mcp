@@ -1,0 +1,23 @@
+{
+  "name": "ai-site-manager-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for the AI Site Manager WordPress plugin: content, media, settings and plugins.",
+  "type": "module",
+  "bin": { "ai-site-manager-mcp": "src/cli.js" },
+  "exports": { ".": "./src/server.js" },
+  "files": ["src", "README.md", "LICENSE"],
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node src/cli.js",
+    "test": "node --test",
+    "check": "node --check src/cli.js && node --check src/api.js && node --check src/server.js"
+  },
+  "dependencies": { "@modelcontextprotocol/server": "^2.3.1", "zod": "^4.6.7" },
+  "devDependencies": { "@modelcontextprotocol/client": "^2.3.1" },
+  "repository": { "type": "git", "url": "git+https://github.com/nkd3v/ai-site-manager-mcp.git" },
+  "homepage": "https://github.com/nkd3v/ai-site-manager-mcp#readme",
+  "bugs": "https://github.com/nkd3v/ai-site-manager-mcp/issues",
+  "author": "nkd3v",
+  "license": "MIT",
+  "keywords": ["mcp", "wordpress", "ai-site-manager", "model-context-protocol"]
+}

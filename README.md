@@ -1,2 +1,118 @@
-# ai-site-manager-mcp
-Run AI Site Manager for WordPress as an MCP server with npx. Content, media, scoped settings and plugin management.
+# AI Site Manager MCP
+
+An MCP server for the **AI Site Manager** WordPress plugin. Connect an MCP client to your site's scoped API key to work with posts, pages, custom post types, taxonomies, comments, media, approved settings and plugins.
+
+This is a local stdio MCP adapter. The AI Site Manager plugin must already be installed and activated on your WordPress site. It connects to that plugin's HTTPS API; it does not install the WordPress plugin or provide a hosted MCP endpoint.
+
+## Install the WordPress companion
+
+1. Download [ai-site-manager.zip from the release](https://github.com/nkd3v/ai-site-manager-mcp/releases/latest/download/ai-site-manager.zip).
+2. Upload it in **WordPress → Plugins → Add New → Upload Plugin**, then activate it. Requires WordPress 6.6+ and PHP 7.4+.
+3. Open **Settings → AI Site Manager**. Create an expiring key, choose its user and scopes, and approve exact option names if settings access is needed.
+4. Save the one-time key privately and copy the API base URL. Configure the MCP client below.
+
+The companion source and disposable integration tests are in [wordpress-plugin/ai-site-manager](wordpress-plugin/ai-site-manager). Its [API guide](wordpress-plugin/ai-site-manager/docs/AI-GUIDE.md) describes native fields, permissions and operational limits. The companion's Python example sends an explicit User-Agent, and its HTTP test image has a valid PNG checksum.
+
+## Run with npx
+
+Requires **Node.js 22 or later**, npm, and Git for the GitHub package specifier.
+
+```sh
+export WP_AI_BASE='https://example.com/wp-json/ai-site-manager/v1'
+# Supply WP_AI_KEY from your private environment or secret storage.
+npx --yes github:nkd3v/ai-site-manager-mcp
+```
+
+The server waits for an MCP client to communicate over stdin/stdout. It does not open a browser. To check installation without credentials:
+
+```sh
+npx --yes github:nkd3v/ai-site-manager-mcp --version
+```
+
+The package runs directly from GitHub; npm registry publication is not required. To pin the initial release, use `github:nkd3v/ai-site-manager-mcp#v1.0.0` instead of the unpinned specifier. Use a full commit SHA for an immutable pin.
+
+For a local install:
+
+```sh
+npm install --global github:nkd3v/ai-site-manager-mcp
+ai-site-manager-mcp --help
+```
+
+## MCP client configuration
+
+Add this entry to a client that accepts `mcpServers` configuration:
+
+```json
+{
+  "mcpServers": {
+    "ai-site-manager": {
+      "command": "npx",
+      "args": ["--yes", "github:nkd3v/ai-site-manager-mcp#v1.0.0"],
+      "env": {
+        "WP_AI_BASE": "https://example.com/wp-json/ai-site-manager/v1",
+        "WP_AI_KEY_FILE": "/absolute/path/to/ai-site-manager.key"
+      }
+    }
+  }
+}
+```
+
+The key file must contain **only the API key**, with an optional trailing newline. Keep it outside your repositories and restrict access to its owner (`chmod 600 /absolute/path/to/ai-site-manager.key`). An environment export file is a different format: source it in your shell, then launch the server using `WP_AI_KEY`, or use your MCP client's secret/environment mechanism. MCP clients launched from a desktop application may not inherit your shell environment. Client-specific configuration formats vary.
+
+You can supply `WP_AI_KEY` directly instead of `WP_AI_KEY_FILE`; do not set both. Never place the key in command arguments, URLs, public examples or committed configuration.
+
+## Configuration
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `WP_AI_BASE` | HTTPS API namespace URL; supports WordPress installed in a subdirectory and `https://example.com/?rest_route=/ai-site-manager/v1` | Required |
+| `WP_AI_KEY` | Scoped API key | Required unless using a key file |
+| `WP_AI_KEY_FILE` | Absolute path to a plain-text key file | Alternative to `WP_AI_KEY` |
+| `WP_AI_AUTH_HEADER` | `Authorization` or `X-AISM-Key` | `Authorization` |
+| `WP_AI_TIMEOUT_MS` | Request timeout, 1000–600000 milliseconds | `120000` |
+| `WP_AI_MAX_UPLOAD_BYTES` | Local upload limit, up to 1 GiB; WordPress/host limits also apply | `33554432` (32 MiB) |
+
+## Tools
+
+| Tools | Operations |
+| --- | --- |
+| `aism_discover`, `aism_guide`, `aism_schema` | Inspect scopes, expiry, resources, approved options and native schemas |
+| `aism_content_list`, `aism_content_get` | Read/search content, terms, comments and native type/taxonomy/status discovery; pagination headers are included |
+| `aism_content_create`, `aism_content_update`, `aism_content_delete` | Create drafts, update native fields/metadata, assign taxonomy/featured images, moderate comments, trash or permanently delete |
+| `aism_revisions` | Read a revision list or one revision |
+| `aism_media_upload` | Upload an operator-provided local image/media file; optional title, alt text, caption and parent post |
+| `aism_settings_list`, `aism_settings_get`, `aism_settings_update` | Read or replace values of exactly approved settings |
+| `aism_plugins_list`, `aism_plugin_install`, `aism_plugin_upload`, `aism_plugin_action` | List/install/upload/activate/deactivate/update/delete plugins |
+
+The authenticated site guide is also available as the MCP resource `aism://guide`. Successful tool results include `{status, headers, data}`; native pagination headers appear in `headers`. API failures set MCP `isError` and include the status and error code. Credentials are redacted from results.
+
+Start with `aism_discover`, then `aism_schema` for the relevant resource. `aism_content_create` defaults posts and pages to `draft`; publication requires an explicit `status`. Native JSON fields and query parameters pass through to the plugin. Use `context: "edit"` to read raw Gutenberg content; preserve it when editing. `aism_content_update` sends only the supplied fields. Structured settings updates replace the whole value, so read immediately before editing.
+
+The server exposes all tools; the API independently enforces the key's scopes, approved option names and owner's current WordPress capabilities on every request. Read scopes do not permit edits or deletions. Plugin installation adds executable code; grant those permissions only when intended. The gateway has no arbitrary SQL, PHP execution, user/theme administration, private metadata access or remote-URL fetching. The tool hints identify reads and destructive operations; clients must still honor the operator's authorization.
+
+## Network behavior and troubleshooting
+
+- HTTPS certificate validation remains enabled. Configure trusted certificates through Node's supported certificate configuration if your environment requires a private CA.
+- Credentials go only to the configured API origin. Redirects are refused, including same-origin redirects. Configure the final canonical URL.
+- The explicit `AI-Site-Manager-MCP/1.0` User-Agent avoids the default Python-urllib signature that some Cloudflare rules block. Host/firewall policies still apply.
+- Requests are never automatically retried. After a timeout or failed upload, search/read state before retrying: WordPress may already have created the object or file. There is no idempotency, atomic compare-and-swap or rollback.
+- Responses are limited to 16 MiB; use `per_page`, `page` and `_fields` for large collections. Uploads use multipart and enforce the local file limit before sending.
+- A `401` means the key is missing, invalid, expired or revoked. A `403` can mean missing scopes, native capabilities, an unapproved setting, or a host/firewall rejection. Use `X-AISM-Key` if your host strips Authorization.
+- The normal server writes only MCP protocol messages to stdout. Startup errors go to stderr. `--help` and `--version` print human-readable output and exit.
+
+## Development
+
+```sh
+git clone https://github.com/nkd3v/ai-site-manager-mcp.git
+cd ai-site-manager-mcp
+npm ci
+npm run check
+npm test
+npm pack --dry-run
+```
+
+Tests exercise credential isolation, URL handling, pagination, redirects, uncertain writes, upload limits and real MCP tool/resource calls against simulated API responses. They never modify a live WordPress site. The source is plain JavaScript with no build or install scripts. Package contents are explicitly limited to source, documentation and license.
+
+Built using the [official MCP SDK](https://github.com/modelcontextprotocol/typescript-sdk). The initial source commit is created through GitHub's commit API and verified for GitHub's GPG signature.
+
+The JavaScript MCP adapter is MIT licensed. The separately distributed WordPress companion is GPL-2.0-or-later; see its [license](wordpress-plugin/ai-site-manager/LICENSE).

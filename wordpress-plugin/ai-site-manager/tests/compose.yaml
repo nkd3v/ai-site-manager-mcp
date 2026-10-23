@@ -1,0 +1,41 @@
+services:
+  db:
+    image: mariadb:11.4
+    environment:
+      MARIADB_ROOT_PASSWORD: isolated-root-password
+      MARIADB_DATABASE: wordpress
+      MARIADB_USER: wordpress
+      MARIADB_PASSWORD: isolated-test-password
+    volumes:
+      - database:/var/lib/mysql
+  wordpress:
+    image: wordpress:php8.3-apache
+    ports:
+      - '127.0.0.1::80'
+    environment: &wp_env
+      WORDPRESS_DB_HOST: db
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: isolated-test-password
+      WORDPRESS_DB_NAME: wordpress
+      WORDPRESS_DEBUG: '1'
+      WORDPRESS_CONFIG_EXTRA: |
+        if (!defined('WP_ENVIRONMENT_TYPE')) { define('WP_ENVIRONMENT_TYPE', 'local'); }
+        if (!defined('AISM_ALLOW_INSECURE_LOCAL_HTTP')) { define('AISM_ALLOW_INSECURE_LOCAL_HTTP', true); }
+        define('WP_DEBUG_LOG', true);
+        define('WP_DEBUG_DISPLAY', false);
+    volumes: &wp_volumes
+      - wordpress:/var/www/html
+      - ..:/var/www/html/wp-content/plugins/ai-site-manager
+    depends_on:
+      - db
+  cli:
+    image: wordpress:cli-php8.3
+    user: '33:33'
+    environment: *wp_env
+    volumes: *wp_volumes
+    profiles: ['tools']
+    depends_on:
+      - wordpress
+volumes:
+  wordpress:
+  database:
