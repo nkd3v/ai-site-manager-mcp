@@ -79,6 +79,10 @@ The key file must contain **only the API key**, with an optional trailing newlin
 
 You can supply `WP_AI_KEY` directly instead of `WP_AI_KEY_FILE`; do not set both. Never place the key in command arguments, URLs, public examples or committed configuration.
 
+When run in a terminal, the server prompts for a missing `WP_AI_BASE` and, if neither credential variable is set, `WP_AI_KEY_FILE`. Enter the HTTPS API namespace URL and the path to an existing plain-text key file. Values apply only to that process and are not saved. Existing environment values are kept, and supplying `WP_AI_KEY` skips the key-file prompt. Press Ctrl+C to cancel.
+
+Prompts go to stderr, keeping stdout available for MCP messages. Automatic prompting requires both stdin and stderr to be terminals. Desktop MCP clients and other noninteractive launches must supply the variables in their configuration; missing values produce a startup error listing the variables to set.
+
 ## Configuration
 
 | Variable | Purpose | Default |
