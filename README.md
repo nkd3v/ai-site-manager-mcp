@@ -29,7 +29,7 @@ The server waits for an MCP client to communicate over stdin/stdout. It does not
 npx --yes github:nkd3v/ai-site-manager-mcp --version
 ```
 
-The package runs directly from GitHub; npm registry publication is not required. To pin the current release, use `github:nkd3v/ai-site-manager-mcp#v1.2.0` instead of the unpinned specifier. Use a full commit SHA for an immutable pin.
+The package runs directly from GitHub; npm registry publication is not required. To pin the current release, use `github:nkd3v/ai-site-manager-mcp#v1.3.0` instead of the unpinned specifier. Use a full commit SHA for an immutable pin.
 
 For a local install:
 
@@ -50,7 +50,7 @@ Updating the MCP adapter and the WordPress companion are separate steps. An alre
    ```
 
    For the theme-management update, expect `1.1.0` or later. npm caches packages; [`--prefer-online`](https://docs.npmjs.com/cli/npm-exec/#prefer-online) forces it to check for updates. If your MCP configuration pins an older tag or commit, such as `#v1.0.0`, change that package specifier too; checking the unpinned version does not update a pinned configuration. Use the unpinned specifier to follow the repository's default branch, or pin the commit you intend to run.
-3. Download the [current WordPress companion ZIP](releases/ai-site-manager.zip?raw=true). In **WordPress → Plugins → Add New → Upload Plugin**, upload it and choose **Replace current with uploaded** when prompted. Theme support requires companion version `1.1.0` or later. Replacing the plugin preserves its keys and settings; do not uninstall it as part of the update.
+3. From companion `1.3.0`, WordPress offers new releases in **Dashboard → Updates** and the plugin list, and can update the companion automatically if you enable auto-updates for it. It verifies each ZIP against the release's `SHA256SUMS`. For older companions, or to update manually: download the [current WordPress companion ZIP](releases/ai-site-manager.zip?raw=true). In **WordPress → Plugins → Add New → Upload Plugin**, upload it and choose **Replace current with uploaded** when prompted. Theme support requires companion version `1.1.0` or later. Replacing the plugin preserves its keys and settings; do not uninstall it as part of the update.
 4. To grant theme access, create a new key in **Settings → AI Site Manager** with the needed `themes:read`, `themes:write` and/or `themes:delete` permissions, plus any permissions the client already needs. Replace the key in your MCP client's environment or key file. Existing keys retain their previous permissions and remain usable; they do not gain theme access automatically. Revoke the old key after verifying the replacement works.
 5. Restart or reconnect the MCP server so the client refreshes its tool list and credentials. Call `aism_discover` to verify the companion version and key scopes, then `aism_themes_list` if you granted `themes:read`.
 

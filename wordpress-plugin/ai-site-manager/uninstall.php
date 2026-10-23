@@ -6,6 +6,7 @@ function aism_uninstall_site() {
 	$wpdb->query( "DROP TABLE IF EXISTS `{$wpdb->prefix}aism_keys`" );
 	$wpdb->query( "DROP TABLE IF EXISTS `{$wpdb->prefix}aism_audit`" );
 	delete_option( 'aism_version' );
+	delete_site_transient( 'aism_github_release' );
 	wp_clear_scheduled_hook( 'aism_cleanup' );
 }
 if ( is_multisite() ) {

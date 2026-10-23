@@ -37,6 +37,25 @@ The PHP suite exercises authentication, expiration, revocation, hashed storage, 
 
 The update test adds a temporary MU plugin and header-only fixture plugin inside the disposable container. It advertises a ZIP on the private Docker network. The repository-install checks download Hello Dolly and Twenty Twenty-One from WordPress.org and require outbound access. Tests do not contact or modify any other WordPress installation. Fixtures and credentials are test-only and are excluded from the distributable ZIP. A failed suite may leave fixtures behind; destroy the disposable volumes before starting over.
 
+## GitHub self-update
+
+`updater.php` mocks GitHub's release API and downloads, then really replaces the installed plugin folder. Run it only where the plugin is **copied** into a disposable site. Never run it against the Compose setup above: that bind-mounts this working copy, so an update would overwrite or delete your source files.
+
+```sh
+# A separate project without the plugin bind mount:
+sed '/- \.\.:\/var\/www\/html\/wp-content\/plugins\/ai-site-manager/d' ai-site-manager/tests/compose.yaml > /tmp/aism-upd.yaml
+docker compose -p aism-upd-test -f /tmp/aism-upd.yaml up -d
+# Install WordPress as above (with -p aism-upd-test -f /tmp/aism-upd.yaml), then copy the plugin in:
+tar --exclude .DS_Store --exclude __pycache__ -cf - ai-site-manager | docker exec -i aism-upd-test-wordpress-1 tar -xf - -C /var/www/html/wp-content/plugins
+docker exec aism-upd-test-wordpress-1 chown -R 33:33 /var/www/html/wp-content
+docker compose -p aism-upd-test -f /tmp/aism-upd.yaml run --rm cli wp plugin activate ai-site-manager
+docker exec --user 33:33 aism-upd-test-wordpress-1 php /var/www/html/wp-content/plugins/ai-site-manager/tests/updater.php /var/www/html/wp-load.php
+docker exec --user 33:33 aism-upd-test-wordpress-1 php /var/www/html/wp-content/plugins/ai-site-manager/tests/updater.php /var/www/html/wp-load.php verify
+docker compose -p aism-upd-test -f /tmp/aism-upd.yaml down -v
+```
+
+It covers up-to-date and newer releases, keeping the plugin out of WordPress.org update checks, caching, GitHub errors, releases missing `SHA256SUMS` or a version tag, the details dialog, the **Check for updates** link, checksum mismatches, older packages, ZIP folder renaming, preserved activation, and that the update survives the end of the request. To try the real GitHub release, copy the plugin in, lower its `Version` header and `AISM_VERSION`, then run `wp plugin update ai-site-manager`; it requires outbound access to GitHub.
+
 The local-HTTP exception requires both `WP_ENVIRONMENT_TYPE=local` and `AISM_ALLOW_INSECURE_LOCAL_HTTP=true`. To exercise the normal HTTPS guard without modifying the configuration, run:
 
 ```sh
