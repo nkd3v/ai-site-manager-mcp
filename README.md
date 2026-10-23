@@ -38,6 +38,24 @@ npm install --global github:nkd3v/ai-site-manager-mcp
 ai-site-manager-mcp --help
 ```
 
+## Update an existing installation
+
+Updating the MCP adapter and the WordPress companion are separate steps. An already running MCP server keeps using the code it started with until restarted.
+
+1. Stop the server, or disconnect it in your MCP client.
+2. Fetch and check the current MCP version without supplying credentials:
+
+   ```sh
+   npx --yes --prefer-online github:nkd3v/ai-site-manager-mcp --version
+   ```
+
+   For the theme-management update, expect `1.1.0` or later. npm caches packages; [`--prefer-online`](https://docs.npmjs.com/cli/npm-exec/#prefer-online) forces it to check for updates. If your MCP configuration pins an older tag or commit, such as `#v1.0.0`, change that package specifier too; checking the unpinned version does not update a pinned configuration. Use the unpinned specifier to follow the repository's default branch, or pin the commit you intend to run.
+3. Download the [current WordPress companion ZIP](releases/ai-site-manager.zip?raw=true). In **WordPress → Plugins → Add New → Upload Plugin**, upload it and choose **Replace current with uploaded** when prompted. Theme support requires companion version `1.1.0` or later. Replacing the plugin preserves its keys and settings; do not uninstall it as part of the update.
+4. To grant theme access, create a new key in **Settings → AI Site Manager** with the needed `themes:read`, `themes:write` and/or `themes:delete` permissions, plus any permissions the client already needs. Replace the key in your MCP client's environment or key file. Existing keys retain their previous permissions and remain usable; they do not gain theme access automatically. Revoke the old key after verifying the replacement works.
+5. Restart or reconnect the MCP server so the client refreshes its tool list and credentials. Call `aism_discover` to verify the companion version and key scopes, then `aism_themes_list` if you granted `themes:read`.
+
+The MCP configuration below includes `--prefer-online` so subsequent launches check for updates. This does not update an already running process. If you installed the adapter globally instead of using npx, rerun `npm install --global github:nkd3v/ai-site-manager-mcp`, check `ai-site-manager-mcp --version`, and restart it.
+
 ## MCP client configuration
 
 Add this entry to a client that accepts `mcpServers` configuration:
@@ -47,7 +65,7 @@ Add this entry to a client that accepts `mcpServers` configuration:
   "mcpServers": {
     "ai-site-manager": {
       "command": "npx",
-      "args": ["--yes", "github:nkd3v/ai-site-manager-mcp"],
+      "args": ["--yes", "--prefer-online", "github:nkd3v/ai-site-manager-mcp"],
       "env": {
         "WP_AI_BASE": "https://example.com/wp-json/ai-site-manager/v1",
         "WP_AI_KEY_FILE": "/absolute/path/to/ai-site-manager.key"
