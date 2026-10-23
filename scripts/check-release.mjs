@@ -16,6 +16,7 @@ const current = parse(version);
 for (const [name, value] of [
   ['lockfile version', lock.version],
   ['lockfile root package version', lock.packages[''].version],
+  ['MCP runtime version', read('src/server.js').match(/export const VERSION = '([^']+)'/)?.[1]],
   ['WordPress plugin header', plugin.match(/^ \* Version: (.+)$/m)?.[1]],
   ['AISM_VERSION', plugin.match(/define\( 'AISM_VERSION', '([^']+)' \);/)?.[1]],
   ['WordPress stable tag', readme.match(/^Stable tag: (.+)$/m)?.[1]],

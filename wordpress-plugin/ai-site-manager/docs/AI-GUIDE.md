@@ -88,7 +88,7 @@ PUT accepts only `{"value":...}`. Preserve JSON types from the option schema. Re
 
 ## Manage plugins
 
-Plugin changes are supported on single-site WordPress; multisite supports listing only. The key owner's plugin capabilities, `DISALLOW_FILE_MODS`, filesystem access, dependency checks and native WordPress restrictions apply. AI Site Manager cannot modify itself through these endpoints. Plugin installation always leaves the plugin inactive; activation is a separate operation. Plugin ZIP upload does not overwrite an installed plugin.
+Plugin changes are supported on single-site WordPress; multisite supports listing only. The key owner's plugin capabilities, `DISALLOW_FILE_MODS`, filesystem access, dependency checks and native WordPress restrictions apply. AI Site Manager cannot modify itself through these endpoints. Plugin installation always leaves the plugin inactive; activation is a separate operation. The new-install ZIP upload endpoint does not overwrite an installed plugin; use the explicit ZIP update endpoint below to replace one.
 
 | Operation | Endpoint | Body / requirement |
 | --- | --- | --- |
@@ -98,9 +98,10 @@ Plugin changes are supported on single-site WordPress; multisite supports listin
 | Activate | `POST /plugins/action` | `{"plugin":"akismet/akismet","action":"activate"}`; `plugins:write` + native activation permission |
 | Deactivate | `POST /plugins/action` | same with `"action":"deactivate"`; `plugins:write` + native deactivation permission |
 | Update | `POST /plugins/action` | same with `"action":"update"`; `plugins:write` + `update_plugins` |
+| Update from local ZIP (1.2.0+) | `POST /plugins/update` | multipart `plugin` identifier and `pluginzip` ZIP; `plugins:write` + `update_plugins` + `upload_plugins` |
 | Delete inactive plugin | `POST /plugins/action` | same with `"action":"delete"`; `plugins:delete` + native delete permission |
 
-`plugin` accepts the identifier returned by listing, or its full basename with `.php`. Deactivate an active plugin before deleting it. Updates install the package advertised through WordPress's plugin update system (including third-party update providers), not a caller-supplied URL. A response with `updated:false` means no update is currently advertised; it is not an update failure. Re-list plugins to verify the installed version and status. Plugin updates and activation may affect site behavior; act within the operator's request.
+`plugin` accepts the identifier returned by listing, or its full basename with `.php`. Deactivate an active plugin before deleting it. The `action:update` operation installs the package advertised through WordPress's plugin update system (including third-party update providers), not a caller-supplied URL. A response with `updated:false` means no update is currently advertised; it is not an update failure. Re-list plugins to verify the installed version and status. Plugin updates and activation may affect site behavior; act within the operator's request.
 
 ```sh
 curl --ca-native --fail-with-body -X POST "$WP_AI_BASE/plugins/upload" \
@@ -109,6 +110,8 @@ curl --ca-native --fail-with-body -X POST "$WP_AI_BASE/plugins/action" \
   -H "Authorization: Bearer $WP_AI_KEY" -H 'Content-Type: application/json' \
   --data '{"plugin":"my-plugin/my-plugin.php","action":"activate"}'
 ```
+
+For a local ZIP update, send `POST /plugins/update` with `-F 'plugin=my-plugin/my-plugin.php' -F 'pluginzip=@./my-plugin-2.0.zip'` and the authentication header. The target must already be installed in its own top-level directory. The ZIP must contain that exact directory and main PHP filename, a valid plugin header, a strictly newer version and compatible PHP/WordPress requirements. Mismatched ZIPs and same/older versions are rejected before replacement. Active plugins remain active and inactive plugins remain inactive; plugin options are preserved. The response contains `plugin`, `updated:true`, `version` and `active`. AI Site Manager itself remains protected. Ordinary uploads never overwrite installations. With MCP, use `aism_plugin_update` with `plugin` and optional `file_path`; omitting the path uses the advertised update.
 
 If WordPress needs filesystem credentials, ask the operator to configure the host through their normal admin/hosting tools; do not send filesystem credentials to this API. Installing or updating plugins can take longer than ordinary content calls. Use a suitable client timeout and re-list state after any timeout before retrying.
 

@@ -14,7 +14,7 @@ final class AISM_API {
 	public function routes() {
 		foreach ( array(
 			'/discovery' => 'GET', '/guide' => 'GET', '/schema' => 'GET',
-			'/plugins' => 'GET', '/plugins/install' => 'POST', '/plugins/upload' => 'POST', '/plugins/action' => 'POST',
+			'/plugins' => 'GET', '/plugins/install' => 'POST', '/plugins/upload' => 'POST', '/plugins/update' => 'POST', '/plugins/action' => 'POST',
 			'/themes' => 'GET', '/themes/install' => 'POST', '/themes/upload' => 'POST', '/themes/action' => 'POST',
 			'/settings' => 'GET', '/settings/(?P<option>[a-zA-Z0-9_.-]+)' => 'GET,PUT',
 			'/wp/(?P<resource>[a-zA-Z0-9_-]+)(?:/(?P<object_id>[1-9][0-9]*|[a-zA-Z_-]+))?(?:/(?P<subresource>revisions)(?:/(?P<revision_id>[1-9][0-9]*))?)?' => 'GET,POST,PUT,PATCH,DELETE',
@@ -152,7 +152,7 @@ final class AISM_API {
 			'plugin_version' => AISM_VERSION, 'wordpress_version' => get_bloginfo( 'version' ), 'base_url' => rest_url( self::NS ),
 			'key' => array( 'id' => (int) $key['id'], 'name' => $key['name'], 'user_id' => (int) $key['user_id'], 'scopes' => $key['scopes'], 'expires_at_utc' => $key['expires_at'] ),
 			'resources' => $this->resources(), 'approved_options' => array_values( array_filter( $key['option_names'], array( 'AISM_Store', 'option_allowed' ) ) ),
-			'endpoints' => array( 'GET /guide', 'GET /schema?resource=posts', 'GET /settings', 'GET|PUT /settings/{option}', 'GET|POST /wp/{resource}', 'GET|POST|PUT|PATCH|DELETE /wp/{resource}/{id}', 'GET /wp/{resource}/{id}/revisions', 'GET /plugins', 'POST /plugins/install', 'POST /plugins/upload', 'POST /plugins/action', 'GET /themes', 'POST /themes/install', 'POST /themes/upload', 'POST /themes/action' ),
+			'endpoints' => array( 'GET /guide', 'GET /schema?resource=posts', 'GET /settings', 'GET|PUT /settings/{option}', 'GET|POST /wp/{resource}', 'GET|POST|PUT|PATCH|DELETE /wp/{resource}/{id}', 'GET /wp/{resource}/{id}/revisions', 'GET /plugins', 'POST /plugins/install', 'POST /plugins/upload', 'POST /plugins/update', 'POST /plugins/action', 'GET /themes', 'POST /themes/install', 'POST /themes/upload', 'POST /themes/action' ),
 			'stores' => array( 'posts, postmeta' => '/wp/posts, /wp/pages, /wp/media and other discovered post types; REST-registered meta in the meta field', 'terms, term_taxonomy, term_relationships, termmeta' => 'Discovered taxonomy resources; assign terms through post fields', 'comments, commentmeta' => '/wp/comments', 'options' => '/settings/{option}; explicit per-key allowlist' ),
 			'limits' => array( 'max_per_page' => 100, 'settings_body_bytes' => 262144, 'raw_sql' => false, 'native_wordpress_permissions' => true, 'key_authentication_outside_this_namespace' => false ),
 		);

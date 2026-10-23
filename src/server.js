@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import * as z from 'zod/v4';
 
-export const VERSION = '1.1.0';
+export const VERSION = '1.2.0';
 const resource = z.string().regex(/^[a-zA-Z0-9_-]+$/).refine(v => !['users', 'plugins', 'themes', 'settings', 'batch', 'application-passwords'].includes(v), 'Use a resource returned by discovery.');
 const id = z.number().int().positive();
 const scalar = z.union([z.string(), z.number(), z.boolean()]);
@@ -48,6 +48,10 @@ export function createServer(api) {
   tool('aism_plugins_list', 'List installed plugins and their identifiers/status.', {}, () => api.request('GET', '/plugins'));
   tool('aism_plugin_install', 'Install a WordPress.org plugin inactive. Requires plugins:write and native install capability. Installation adds executable code.', { slug: z.string().regex(/^[a-z0-9-]+$/) }, a => api.request('POST', '/plugins/install', { body: a }), false, true);
   tool('aism_plugin_upload', 'Install a new local plugin ZIP inactive without replacing existing plugins. Requires plugins:write plus native install/upload capabilities.', { file_path: z.string().min(1) }, a => api.upload('/plugins/upload', a.file_path, 'pluginzip'), false, true);
+  tool('aism_plugin_update', 'Update an installed plugin. Omit file_path to use the WordPress-advertised update, or supply a local ZIP with the same plugin folder/main file and a newer version (companion 1.2.0+). ZIP replacement preserves activation and requires plugins:write plus update/upload capabilities. AI Site Manager cannot update itself; multisite mutations are unavailable.', {
+    plugin: z.string().min(1).describe('Installed plugin identifier from aism_plugins_list, with or without .php.'),
+    file_path: z.string().min(1).optional().describe('Operator-provided local ZIP path. ZIP updates require a plugin in its own top-level directory.'),
+  }, a => a.file_path ? api.upload('/plugins/update', a.file_path, 'pluginzip', { plugin: a.plugin }) : api.request('POST', '/plugins/action', { body: { plugin: a.plugin, action: 'update' } }), false, true);
   tool('aism_plugin_action', 'Activate/deactivate/update/delete an installed plugin. Deletion requires plugins:delete and an inactive plugin. Updates use the WordPress-advertised package. AI Site Manager cannot manage itself; multisite mutations are unavailable.', { plugin: z.string().min(1), action: z.enum(['activate', 'deactivate', 'update', 'delete']) }, a => api.request('POST', '/plugins/action', { body: a }), false, true);
 
   tool('aism_themes_list', 'List installed themes with stylesheet identifiers, versions and active/inactive status. Requires themes:read and native theme access.', {}, () => api.request('GET', '/themes'));

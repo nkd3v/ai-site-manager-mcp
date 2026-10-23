@@ -3,7 +3,7 @@ Contributors: site-owner
 Tags: rest-api, ai, api-key, content, configuration
 Requires at least: 6.6
 Requires PHP: 7.4
-Stable tag: 1.1.1
+Stable tag: 1.2.0
 License: GPLv2 or later
 
 Scoped API keys for AI-assisted WordPress content, media uploads, approved settings, and plugin/theme management.
@@ -28,6 +28,8 @@ Scoped API keys for AI-assisted WordPress content, media uploads, approved setti
 See README.md for operational details and docs/AI-GUIDE.md for the full API guide.
 
 == Changelog ==
+= 1.2.0 =
+Add explicit local ZIP updates for installed plugins, with target/version validation and preserved activation.
 = 1.1.1 =
 Synchronize companion and MCP release versions and refresh the installable ZIP.
 = 1.1.0 =

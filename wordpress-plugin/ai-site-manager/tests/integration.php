@@ -133,6 +133,31 @@ check( call_api( 'POST', '/plugins/action', $read['token'], array( 'plugin' => '
 check( call_api( 'POST', '/plugins/action', $write['token'], array( 'plugin' => 'hello', 'action' => 'delete' ) )->get_status() === 403, 'Write scope deleted plugin' );
 check( call_api( 'POST', '/plugins/action', $full['token'], array( 'plugin' => 'ai-site-manager/ai-site-manager', 'action' => 'deactivate' ) )->get_status() === 403, 'API could deactivate itself' );
 check( call_api( 'POST', '/plugins/action', $full['token'], array( 'plugin' => '../wp-config.php', 'action' => 'activate' ) )->get_status() === 404, 'Plugin path traversal accepted' );
+function call_zip_update( $token, $plugin ) {
+	$request = new WP_REST_Request( 'POST', '/ai-site-manager/v1/plugins/update' );
+	$request->set_header( 'Authorization', 'Bearer ' . $token );
+	$request->set_body_params( array( 'plugin' => $plugin ) );
+	return rest_do_request( $request );
+}
+$fixture_dir = WP_PLUGIN_DIR . '/aism-zip-permissions';
+wp_mkdir_p( $fixture_dir );
+file_put_contents( $fixture_dir . '/main.php', "<?php\n/* Plugin Name: ZIP permissions fixture\nVersion: 1.0.0\n*/" );
+wp_clean_plugins_cache();
+$fixture_plugin = 'aism-zip-permissions/main.php';
+check( call_zip_update( $read['token'], $fixture_plugin )->get_status() === 403, 'Read scope could update from ZIP' );
+check( call_zip_update( $limited['token'], $fixture_plugin )->get_status() === 403, 'ZIP update capability bypassed' );
+$subscriber->add_cap( 'install_plugins' ); // Core maps upload_plugins to install_plugins.
+check( $subscriber->has_cap( 'upload_plugins' ), 'ZIP permission fixture lacks upload_plugins' );
+check( call_zip_update( $limited['token'], $fixture_plugin )->get_status() === 403, 'ZIP update allowed without update_plugins' );
+$subscriber->remove_cap( 'install_plugins' );
+$subscriber->add_cap( 'update_plugins' );
+check( call_zip_update( $limited['token'], $fixture_plugin )->get_status() === 403, 'ZIP update allowed without upload_plugins' );
+$subscriber->remove_cap( 'update_plugins' );
+check( call_zip_update( $full['token'], $fixture_plugin )->get_status() === 400, 'Missing ZIP was not rejected' );
+check( call_zip_update( $full['token'], 'ai-site-manager/ai-site-manager' )->get_status() === 403, 'ZIP could update AI Site Manager itself' );
+unlink( $fixture_dir . '/main.php' );
+rmdir( $fixture_dir );
+wp_clean_plugins_cache();
 $revoked = key_for( $admin->ID, array( 'content:read' ) );
 AISM_Store::revoke( $revoked['id'] );
 check( call_api( 'GET', '/discovery', $revoked['token'] )->get_status() === 401, 'Revoked key accepted' );

@@ -119,9 +119,12 @@ check(status == 200 and option['value'] == 'HTTP integration description', 'HTTP
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKklEQVR4nGPQSFlAU8QwasGoBaMWjFowasGoBaMWjFowasGoBaMWDBULANZWsD0ESLo9AAAAAElFTkSuQmCC')
 
 
-def multipart(field, name, mime, data):
+def multipart(field, name, mime, data, fields=None):
     boundary = 'aismtest' + uuid.uuid4().hex
     payload = (f'--{boundary}\r\nContent-Disposition: form-data; name="{field}"; filename="{name}"\r\nContent-Type: {mime}\r\n\r\n'.encode() + data + f'\r\n--{boundary}--\r\n'.encode())
+    if fields:
+        prefix = b''.join(f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{value}\r\n'.encode() for key, value in fields.items())
+        payload = prefix + payload
     return payload, {'Content-Type': 'multipart/form-data; boundary=' + boundary}
 
 
@@ -156,6 +159,49 @@ status, _, plugin = api('POST', '/plugins/action', {'plugin': plugin_file, 'acti
 check(status == 200 and plugin['status'] == 'active', 'Plugin activation failed: ' + str(plugin))
 status, _, result = api('POST', '/plugins/action', {'plugin': plugin_file, 'action': 'delete'})
 check(status >= 400, 'Active plugin deleted')
+# Explicit ZIP replacement checks the target before removing installed files.
+def update_zip(package, target=plugin_file):
+    raw, extra = multipart('pluginzip', 'update.zip', 'application/zip', package, {'plugin': target})
+    return api('POST', '/plugins/update', raw=raw, extra=extra)
+
+
+php("update_option('aism_zip_fixture_setting', 'preserved');")
+for package, target, expected_code in [
+    (plugin_zip('1.1.0'), '../wp-config.php', 'aism_plugin_missing'),
+    (plugin_zip('1.1.0'), 'ai-site-manager/ai-site-manager', 'aism_self_management'),
+    (plugin_zip('1.0.0'), plugin_file, 'aism_plugin_zip_version'),
+    (plugin_zip('0.9.0'), plugin_file, 'aism_plugin_zip_version'),
+    (b'not a ZIP', plugin_file, None),
+]:
+    status, _, result = update_zip(package, target)
+    check(status >= 400 and (expected_code is None or result.get('code') == expected_code), 'Unsafe ZIP accepted: ' + str(result))
+# A ZIP for a different folder, or one missing the selected main file, cannot replace the target.
+for archive_file, contents in [
+    ('another-plugin/another.php', '<?php /* Plugin Name: Wrong target\nVersion: 9.0.0\n*/'),
+    (plugin_slug + '/other.php', '<?php /* Plugin Name: Wrong main\nVersion: 9.0.0\n*/'),
+    (plugin_file, '<?php /* Plugin Name: Incompatible\nVersion: 9.0.0\nRequires PHP: 99.0\n*/'),
+]:
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, 'w') as archive:
+        archive.writestr(archive_file, contents)
+    status, _, result = update_zip(stream.getvalue())
+    check(status >= 400, 'Mismatched or incompatible package accepted: ' + str(result))
+status, _, plugins = api('GET', '/plugins')
+check(any(p['plugin'] == plugin_file[:-4] and p['version'] == '1.0.0' and p['status'] == 'active' for p in plugins), 'Rejected ZIP changed installed version/status')
+status, _, updated = update_zip(plugin_zip('1.1.0'), plugin_file[:-4])
+check(status == 200 and updated.get('updated') and updated.get('version') == '1.1.0' and updated.get('active') is True, 'Active ZIP update failed: ' + str(updated))
+check(php("echo get_option('aism_zip_fixture_setting');") == 'preserved', 'ZIP update lost settings')
+status, _, plugins = api('GET', '/plugins')
+check(any(p['plugin'] == plugin_file[:-4] and p['version'] == '1.1.0' and p['status'] == 'active' for p in plugins), 'ZIP update did not preserve activation on subsequent request')
+api('POST', '/plugins/action', {'plugin': plugin_file, 'action': 'deactivate'})
+status, _, updated = update_zip(plugin_zip('1.2.0'))
+check(status == 200 and updated.get('version') == '1.2.0' and updated.get('active') is False, 'Inactive ZIP update failed: ' + str(updated))
+raw, extra = multipart('pluginzip', plugin_slug + '.zip', 'application/zip', plugin_zip('9.0.0'))
+status, _, result = api('POST', '/plugins/upload', raw=raw, extra=extra)
+check(status >= 400, 'New-install upload overwrote existing plugin')
+api('POST', '/plugins/action', {'plugin': plugin_file, 'action': 'activate'})
+php("delete_option('aism_zip_fixture_setting');")
+
 # Inject an advertised update for the fixture, using a local test-only package.
 package = plugin_zip('2.0.0')
 encoded = base64.b64encode(package).decode()

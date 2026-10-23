@@ -29,7 +29,7 @@ The server waits for an MCP client to communicate over stdin/stdout. It does not
 npx --yes github:nkd3v/ai-site-manager-mcp --version
 ```
 
-The package runs directly from GitHub; npm registry publication is not required. To pin the current release, use `github:nkd3v/ai-site-manager-mcp#v1.1.1` instead of the unpinned specifier. Use a full commit SHA for an immutable pin.
+The package runs directly from GitHub; npm registry publication is not required. To pin the current release, use `github:nkd3v/ai-site-manager-mcp#v1.2.0` instead of the unpinned specifier. Use a full commit SHA for an immutable pin.
 
 For a local install:
 
@@ -104,7 +104,7 @@ Prompts go to stderr, keeping stdout available for MCP messages. Automatic promp
 | `aism_revisions` | Read a revision list or one revision |
 | `aism_media_upload` | Upload an operator-provided local image/media file; optional title, alt text, caption and parent post |
 | `aism_settings_list`, `aism_settings_get`, `aism_settings_update` | Read or replace values of exactly approved settings |
-| `aism_plugins_list`, `aism_plugin_install`, `aism_plugin_upload`, `aism_plugin_action` | List/install/upload/activate/deactivate/update/delete plugins |
+| `aism_plugins_list`, `aism_plugin_install`, `aism_plugin_upload`, `aism_plugin_update`, `aism_plugin_action` | List/install/upload/activate/deactivate/update/delete plugins |
 | `aism_themes_list`, `aism_theme_install`, `aism_theme_upload`, `aism_theme_action` | List/install/upload/activate/update/delete themes |
 
 The authenticated site guide is also available as the MCP resource `aism://guide`. Successful tool results include `{status, headers, data}`; native pagination headers appear in `headers`. API failures set MCP `isError` and include the status and error code. Credentials are redacted from results.
@@ -112,6 +112,8 @@ The authenticated site guide is also available as the MCP resource `aism://guide
 Start with `aism_discover`, then `aism_schema` for the relevant resource. `aism_content_create` defaults posts and pages to `draft`; publication requires an explicit `status`. Native JSON fields and query parameters pass through to the plugin. Use `context: "edit"` to read raw Gutenberg content; preserve it when editing. `aism_content_update` sends only the supplied fields. Structured settings updates replace the whole value, so read immediately before editing.
 
 The server exposes all tools; the API independently enforces the key's scopes, approved option names and owner's current WordPress capabilities on every request. Read scopes do not permit edits or deletions. Plugin and theme installation adds executable code; grant those permissions only when intended. The gateway has no arbitrary SQL, PHP execution, user administration, private metadata access or remote-URL fetching. The tool hints identify reads and destructive operations; clients must still honor the operator's authorization.
+
+Use `aism_plugin_update` with `plugin` from `aism_plugins_list`. Omit `file_path` for a WordPress-advertised update, or provide an operator-supplied local ZIP to replace that installed plugin (both MCP and companion 1.2.0+). The ZIP must have the same top-level plugin folder and main PHP filename and a strictly newer version. ZIP updates require `plugins:write` plus `update_plugins` and `upload_plugins`, preserve active/inactive status, and reject AI Site Manager itself, multisite mutations, incompatible packages and single-file plugins stored directly in the plugins root. `aism_plugin_upload` remains for new inactive installations. Re-list plugins after updating; inspect state after timeouts before retrying.
 
 Theme support requires companion plugin 1.1.0 or later and a key issued with `themes:read`, `themes:write` and/or `themes:delete` as needed. Existing keys gain no additional permissions; create a new key to grant theme access. `aism_schema` accepts `themes`. Use the `stylesheet` identifier from `aism_themes_list` as the `theme` argument for actions. Installation leaves themes inactive and ZIP uploads never replace installed themes. Switching to another theme deactivates the current one; there is no standalone deactivate action. Deletion rejects the active theme and its parent. Updates use WordPress-advertised packages. Theme mutations support single-site WordPress only.
 

@@ -22,7 +22,7 @@ test('real MCP handshake, tool schemas, validation, defaults, errors and guide r
     await server.connect(serverTransport);
     await client.connect(clientTransport);
     const listing = await client.listTools();
-    assert.equal(listing.tools.length, 21);
+    assert.equal(listing.tools.length, 22);
     assert.equal(listing.tools.find(t => t.name === 'aism_discover').annotations.readOnlyHint, true);
     assert.equal(listing.tools.find(t => t.name === 'aism_content_delete').annotations.destructiveHint, true);
     const discovery = await client.callTool({ name: 'aism_discover', arguments: {} });
@@ -115,6 +115,51 @@ test('theme tools expose native schema, ZIP upload, actions and destructive hint
       const result = await client.callTool({ name, arguments: args });
       assert.equal(result.isError, true);
     }
+    assert.equal(requests.length, count);
+  } finally {
+    await client.close(); await server.close();
+    await rm(folder, { recursive: true });
+  }
+});
+
+test('plugin update tool sends advertised updates or explicit local ZIP targets', async () => {
+  const requests = [];
+  const api = new SiteManagerApi({ base: 'https://example.test/wp-json/ai-site-manager/v1', key: 'test-key', fetchImpl: async (url, options) => {
+    requests.push({ url, ...options });
+    return Response.json({ plugin: 'example/example.php', updated: true, version: '2.0.0', active: true });
+  } });
+  const server = createServer(api);
+  const client = new Client({ name: 'plugin-update-test', version: '1.0.0' });
+  const [ct, st] = InMemoryTransport.createLinkedPair();
+  const folder = await mkdtemp(join(tmpdir(), 'aism-plugin-update-'));
+  try {
+    await server.connect(st);
+    await client.connect(ct);
+    const { tools } = await client.listTools();
+    const tool = tools.find(t => t.name === 'aism_plugin_update');
+    assert.equal(tool.annotations.readOnlyHint, false);
+    assert.equal(tool.annotations.destructiveHint, true);
+    assert.deepEqual(tool.inputSchema.required, ['plugin']);
+    const advertised = await client.callTool({ name: tool.name, arguments: { plugin: 'example/example' } });
+    assert.equal(advertised.structuredContent.data.updated, true);
+    assert.ok(requests.at(-1).url.pathname.endsWith('/plugins/action'));
+    assert.deepEqual(JSON.parse(requests.at(-1).body), { plugin: 'example/example', action: 'update' });
+    const file = join(folder, 'example.zip');
+    const bytes = Buffer.from('ZIP fixture bytes');
+    await writeFile(file, bytes);
+    const uploaded = await client.callTool({ name: tool.name, arguments: { plugin: 'example/example.php', file_path: file } });
+    assert.equal(uploaded.structuredContent.data.active, true);
+    assert.equal(requests.at(-1).method, 'POST');
+    assert.ok(requests.at(-1).url.pathname.endsWith('/plugins/update'));
+    assert.equal(requests.at(-1).body.get('plugin'), 'example/example.php');
+    assert.deepEqual(Buffer.from(await requests.at(-1).body.get('pluginzip').arrayBuffer()), bytes);
+    const count = requests.length;
+    const invalid = await client.callTool({ name: tool.name, arguments: { file_path: file } });
+    assert.equal(invalid.isError, true);
+    const wrongType = join(folder, 'example.txt');
+    await writeFile(wrongType, bytes);
+    const rejected = await client.callTool({ name: tool.name, arguments: { plugin: 'example/example', file_path: wrongType } });
+    assert.equal(rejected.isError, true);
     assert.equal(requests.length, count);
   } finally {
     await client.close(); await server.close();

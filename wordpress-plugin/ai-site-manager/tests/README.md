@@ -15,6 +15,7 @@ docker compose -p aism-test -f ai-site-manager/tests/compose.yaml run --rm cli w
 docker compose -p aism-test -f ai-site-manager/tests/compose.yaml run --rm cli wp plugin activate ai-site-manager
 docker exec --user 33:33 aism-test-wordpress-1 php /var/www/html/wp-content/plugins/ai-site-manager/tests/integration.php /var/www/html/wp-load.php
 docker exec --user 33:33 aism-test-wordpress-1 php /var/www/html/wp-content/plugins/ai-site-manager/tests/theme-restrictions.php /var/www/html/wp-load.php filemods
+docker exec --user 33:33 aism-test-wordpress-1 php /var/www/html/wp-content/plugins/ai-site-manager/tests/plugin-restrictions.php /var/www/html/wp-load.php filemods
 uv run --system-certs ai-site-manager/tests/http-integration.py http://127.0.0.1:PORT aism-test-wordpress-1
 # After HTTP tests: verifies audit cleanup and uninstall, then recreates empty API tables.
 docker exec aism-test-wordpress-1 php /var/www/html/wp-content/plugins/ai-site-manager/tests/lifecycle.php /var/www/html/wp-load.php
@@ -23,6 +24,7 @@ docker compose -p aism-test -f ai-site-manager/tests/compose.yaml run --rm cli w
 docker compose -p aism-test -f ai-site-manager/tests/compose.yaml run --rm cli wp option update home http://aism.test
 docker compose -p aism-test -f ai-site-manager/tests/compose.yaml run --rm cli wp core multisite-convert --title='AI Site Manager Test Network'
 docker exec --user 33:33 aism-test-wordpress-1 php /var/www/html/wp-content/plugins/ai-site-manager/tests/theme-restrictions.php /var/www/html/wp-load.php multisite
+docker exec --user 33:33 aism-test-wordpress-1 php /var/www/html/wp-content/plugins/ai-site-manager/tests/plugin-restrictions.php /var/www/html/wp-load.php multisite
 
 # PHP compatibility / syntax:
 docker run --rm -v "$PWD/ai-site-manager:/plugin:ro" php:7.4-cli sh -c 'find /plugin -name "*.php" -exec php -l {} \;'
@@ -31,7 +33,7 @@ docker run --rm -v "$PWD/ai-site-manager:/plugin:ro" php:7.4-cli sh -c 'find /pl
 docker compose -p aism-test -f ai-site-manager/tests/compose.yaml down -v
 ```
 
-The PHP suite exercises authentication, expiration, revocation, hashed storage, independent scopes, native user capabilities, ID override resistance, blocked routes, drafts, partial updates, metadata, taxonomy assignment, option allowlists and validation, plugin/theme access, independent theme scopes, native theme capabilities, broken/incompatible theme activation, audit records, and request-local identity restoration. The HTTP suite tests admin key creation and one-time display, CSRF nonce checks, privilege checks for key owners, both authentication headers, non-URL authentication, cache headers, pagination, real multipart/raw image uploads, featured images, actual plugin ZIP installation, activation/deactivation/deletion, an advertised update through WordPress's real upgrader, and WordPress.org plugin/theme installation. Theme tests also cover duplicate ZIP rejection, active-theme updates, child activation, and active child/parent deletion protection.
+The PHP suite exercises authentication, expiration, revocation, hashed storage, independent scopes, native user capabilities, ID override resistance, blocked routes, drafts, partial updates, metadata, taxonomy assignment, option allowlists and validation, plugin/theme access, independent theme scopes, native theme capabilities, broken/incompatible theme activation, audit records, and request-local identity restoration. The HTTP suite tests admin key creation and one-time display, CSRF nonce checks, privilege checks for key owners, both authentication headers, non-URL authentication, cache headers, pagination, real multipart/raw image uploads, featured images, actual plugin ZIP installation, activation/deactivation/deletion, an advertised update through WordPress's real upgrader, active/inactive ZIP updates with preserved settings, mismatched/invalid/incompatible/same-version/older ZIP rejection, and WordPress.org plugin/theme installation. Theme tests also cover duplicate ZIP rejection, active-theme updates, child activation, and active child/parent deletion protection.
 
 The update test adds a temporary MU plugin and header-only fixture plugin inside the disposable container. It advertises a ZIP on the private Docker network. The repository-install checks download Hello Dolly and Twenty Twenty-One from WordPress.org and require outbound access. Tests do not contact or modify any other WordPress installation. Fixtures and credentials are test-only and are excluded from the distributable ZIP. A failed suite may leave fixtures behind; destroy the disposable volumes before starting over.
 
