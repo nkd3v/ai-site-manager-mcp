@@ -1,6 +1,6 @@
 {
   "name": "ai-site-manager-mcp",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "MCP server for the AI Site Manager WordPress plugin: content, media, settings, plugins and themes.",
   "type": "module",
   "bin": { "ai-site-manager-mcp": "src/cli.js" },
@@ -10,6 +10,7 @@
   "scripts": {
     "start": "node src/cli.js",
     "test": "node --test",
+    "release:check": "node scripts/check-release.mjs",
     "check": "node --check src/cli.js && node --check src/config.js && node --check src/api.js && node --check src/server.js"
   },
   "dependencies": { "@modelcontextprotocol/server": "^2.3.1", "zod": "^4.6.7" },

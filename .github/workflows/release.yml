@@ -1,0 +1,65 @@
+name: Release
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: astral-sh/setup-uv@v7
+      - name: Require a new, synchronized version
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          previous=0.0.0
+          if [[ -n "$BEFORE" && ! "$BEFORE" =~ ^0+$ ]]; then
+            previous=$(git show "$BEFORE:package.json" | jq -r .version)
+          fi
+          mapfile -t tags < <(git tag --list 'v*')
+          npm run release:check -- "${tags[@]}" "$previous"
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - name: Verify WordPress upload ZIP matches source
+        run: |
+          uv run --system-certs scripts/package-plugin.py
+          git diff --exit-code -- releases/ai-site-manager.zip
+      - name: Build release assets
+        run: |
+          mkdir -p /tmp/release-assets
+          npm pack --pack-destination /tmp/release-assets
+          cp releases/ai-site-manager.zip /tmp/release-assets/
+          cd /tmp/release-assets
+          sha256sum *.tgz ai-site-manager.zip > SHA256SUMS
+      - name: Publish the release at this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          version=$(node -p 'JSON.parse(require("fs").readFileSync("package.json", "utf8")).version')
+          cat > /tmp/release-notes.md <<EOF
+          Run the MCP adapter with Node.js 22 or later:
+
+          \`npx --yes github:nkd3v/ai-site-manager-mcp#v$version\`
+
+          Upload **ai-site-manager.zip** in WordPress → Plugins → Add New → Upload Plugin. Replace the existing plugin to preserve its keys and settings. Requires WordPress 6.6+ and PHP 7.4+.
+
+          The MCP tarball, companion ZIP, and SHA256 checksums are attached. Version consistency, JavaScript checks, automated tests, and reproducible plugin packaging passed for this commit.
+          EOF
+          gh release create "v$version" /tmp/release-assets/* \
+            --target "$GITHUB_SHA" --title "AI Site Manager MCP v$version" \
+            --notes-file /tmp/release-notes.md --generate-notes

@@ -29,7 +29,7 @@ The server waits for an MCP client to communicate over stdin/stdout. It does not
 npx --yes github:nkd3v/ai-site-manager-mcp --version
 ```
 
-The package runs directly from GitHub; npm registry publication is not required. To pin the initial release, use `github:nkd3v/ai-site-manager-mcp#v1.0.0` instead of the unpinned specifier. Use a full commit SHA for an immutable pin.
+The package runs directly from GitHub; npm registry publication is not required. To pin the current release, use `github:nkd3v/ai-site-manager-mcp#v1.1.1` instead of the unpinned specifier. Use a full commit SHA for an immutable pin.
 
 For a local install:
 
@@ -143,6 +143,8 @@ uv run --system-certs scripts/package-plugin.py
 ```
 
 Tests exercise credential isolation, URL handling, pagination, redirects, uncertain writes, upload limits and real MCP tool/resource calls against simulated API responses. They never modify a live WordPress site. The source is plain JavaScript with no build or install scripts. Package contents are explicitly limited to source, documentation and license.
+
+Every push to `main` must increase the MCP and companion versions together and rebuild the companion ZIP. The Release workflow rejects unchanged or reused versions, runs validation, and publishes `v<version>` at the pushed commit with the MCP tarball, WordPress upload ZIP, and `SHA256SUMS`. Check that the workflow and release succeeded after each push. Repository contributors and agents must follow [AGENTS.md](AGENTS.md).
 
 Built using the [official MCP SDK](https://github.com/modelcontextprotocol/typescript-sdk). The initial source commit is created through GitHub's commit API and verified for GitHub's GPG signature.
 
