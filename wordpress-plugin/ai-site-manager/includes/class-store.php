@@ -13,6 +13,7 @@ final class AISM_Store {
 		$charset = $wpdb->get_charset_collate();
 		$keys = self::table( 'keys' );
 		$audit = self::table( 'audit' );
+		$map = self::table( 'migration_map' );
 		dbDelta( "CREATE TABLE $keys (
 			id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
 			name varchar(190) NOT NULL,
@@ -39,13 +40,28 @@ final class AISM_Store {
 			PRIMARY KEY  (id),
 			KEY created_at (created_at)
 		) $charset;" );
+		// Source→target object IDs for site migrations into this site.
+		dbDelta( "CREATE TABLE $map (
+			id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+			source char(36) NOT NULL,
+			object_type varchar(20) NOT NULL,
+			source_id bigint(20) unsigned NOT NULL,
+			target_id bigint(20) unsigned NOT NULL,
+			created tinyint(1) NOT NULL DEFAULT 0,
+			pending tinyint(1) NOT NULL DEFAULT 1,
+			refs longtext NOT NULL,
+			updated_at datetime NOT NULL,
+			PRIMARY KEY  (id),
+			UNIQUE KEY source_object (source,object_type,source_id),
+			KEY source_pending (source,pending)
+		) $charset;" );
 		update_option( 'aism_version', AISM_VERSION, false );
 		if ( ! wp_next_scheduled( 'aism_cleanup' ) ) { wp_schedule_event( time(), 'daily', 'aism_cleanup' ); }
 	}
 
 	public static function scopes() {
 		$result = array();
-		foreach ( array( 'content', 'media', 'taxonomies', 'comments', 'plugins', 'themes' ) as $group ) {
+		foreach ( array( 'content', 'media', 'taxonomies', 'comments', 'plugins', 'themes', 'migration' ) as $group ) {
 			foreach ( array( 'read', 'write', 'delete' ) as $action ) { $result[] = "$group:$action"; }
 		}
 		return array_merge( $result, array( 'settings:read', 'settings:write' ) );

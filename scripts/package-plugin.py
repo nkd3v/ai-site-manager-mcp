@@ -10,7 +10,7 @@ OUTPUT = ROOT / 'releases' / 'ai-site-manager.zip'
 FILES = [
     'LICENSE', 'README.md', 'readme.txt', 'ai-site-manager.php', 'uninstall.php',
     'docs/AI-GUIDE.md', 'examples/client.py',
-    'includes/class-admin.php', 'includes/class-api.php',
+    'includes/class-admin.php', 'includes/class-api.php', 'includes/class-migration.php',
     'includes/class-plugins.php', 'includes/class-themes.php', 'includes/class-store.php', 'includes/class-updater.php',
 ]
 

@@ -5,6 +5,10 @@ function aism_uninstall_site() {
 	global $wpdb;
 	$wpdb->query( "DROP TABLE IF EXISTS `{$wpdb->prefix}aism_keys`" );
 	$wpdb->query( "DROP TABLE IF EXISTS `{$wpdb->prefix}aism_audit`" );
+	$wpdb->query( "DROP TABLE IF EXISTS `{$wpdb->prefix}aism_migration_map`" );
+	// Imported content stays; only the ID map and migration bookkeeping are removed.
+	delete_option( 'aism_site_uuid' );
+	delete_option( 'aism_migration_sources' );
 	delete_option( 'aism_version' );
 	delete_site_transient( 'aism_github_release' );
 	wp_clear_scheduled_hook( 'aism_cleanup' );

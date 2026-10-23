@@ -5,6 +5,8 @@ export async function startupEnv(env = process.env, { input = process.stdin, out
   if (configured.WP_AI_KEY && configured.WP_AI_KEY_FILE) {
     throw new Error('Set only one of WP_AI_KEY and WP_AI_KEY_FILE.');
   }
+  // A sites file configures every connection; WP_AI_BASE is then optional.
+  if (configured.WP_AI_SITES_FILE?.trim() && !configured.WP_AI_BASE?.trim()) return configured;
   const missing = [];
   if (!configured.WP_AI_BASE?.trim()) missing.push('WP_AI_BASE');
   if (!configured.WP_AI_KEY && !configured.WP_AI_KEY_FILE?.trim()) missing.push('WP_AI_KEY_FILE');

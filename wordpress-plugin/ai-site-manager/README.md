@@ -1,6 +1,6 @@
 # AI Site Manager
 
-A WordPress plugin that gives AI clients scoped API keys for content, image uploads, approved configuration, and plugin/theme management. Requires WordPress 6.6+ and PHP 7.4+.
+A WordPress plugin that gives AI clients scoped API keys for content, image uploads, approved configuration, plugin/theme management, and site-to-site migration. Requires WordPress 6.6+ and PHP 7.4+.
 
 ## Install and connect
 
@@ -22,6 +22,8 @@ Keys work only under `ai-site-manager/v1`, using `Authorization: Bearer <key>` o
 
 Content and settings use WordPress's APIs and their permission checks, rather than raw SQL. There is no arbitrary database or PHP execution endpoint. Custom table access and private/unregistered metadata are not exposed. Third-party plugin configuration can be approved through its wp_options names; custom options may contain private data or control powerful behavior, so review each name before approval. Installing plugins or themes inherently adds executable code and should be granted only to an AI authorized to do so.
 
+- Migration (1.4.0+): export a site's content, original media files, plugin/theme packages and portable settings, and import them into another AI Site Manager site with ID remapping, URL rewriting, incremental re-sync and rollback. See the [migration guide](docs/AI-GUIDE.md#migrate-between-sites-140).
+
 New theme scopes are `themes:read`, `themes:write` (installation, upload, activation, updates), and `themes:delete`. Existing keys are unchanged; issue a new key with the needed theme permissions. Read the [theme API guide](docs/AI-GUIDE.md#manage-themes) for endpoints and examples.
 
 ## Operations
@@ -33,6 +35,8 @@ WordPress file modification restrictions, upload limits, filesystem access, and 
 ### Updating AI Site Manager
 
 From 1.3.0, the plugin checks the latest [GitHub release](https://github.com/nkd3v/ai-site-manager-mcp/releases) (cached for 6 hours) and offers newer versions in **Dashboard → Updates** and the plugin list, like any other plugin. Use **Check for updates** in the plugin's row to check immediately, and WordPress's **Enable auto-updates** link if you want it to update itself. Before installing, it downloads the release's `SHA256SUMS` and refuses a ZIP that does not match, is not AI Site Manager, or is not newer than the installed version. Keys and settings are preserved, and the API cannot update this plugin. The `Update URI` header also stops WordPress.org from offering an unrelated plugin with the same slug. Define `AISM_DISABLE_GITHUB_UPDATES` as `true` in `wp-config.php` to turn off GitHub checks; updates by ZIP upload still work.
+
+Migration scopes (`migration:read`, `migration:write`, `migration:delete`) are never selected by default. `migration:read` exports everything, including private content, comment emails and plugin/theme code; grant it only for a migration and revoke the key afterwards. Imports run as the key owner with `manage_options` and `import`; without `unfiltered_html` WordPress filters imported content, and free-form metadata and site settings are skipped. Rollback deletes only objects a migration created and restores settings it changed. Uninstalling removes the migration ID map but keeps imported content.
 
 Each authenticated dispatched request and valid-key permission denial is recorded with key/user IDs, method, route, status and UTC timestamp. Bodies, query strings, tokens and IP addresses are not recorded. Invalid-key and pre-authentication errors are not logged. Retention cleanup runs daily through WP-Cron; if cron is disabled, call WordPress cron through your normal scheduler. There is no built-in request rate limit or automatic content rollback. See the AI guide for retry and concurrency limitations.
 

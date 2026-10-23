@@ -22,7 +22,7 @@ test('real MCP handshake, tool schemas, validation, defaults, errors and guide r
     await server.connect(serverTransport);
     await client.connect(clientTransport);
     const listing = await client.listTools();
-    assert.equal(listing.tools.length, 22);
+    assert.equal(listing.tools.length, 31);
     assert.equal(listing.tools.find(t => t.name === 'aism_discover').annotations.readOnlyHint, true);
     assert.equal(listing.tools.find(t => t.name === 'aism_content_delete').annotations.destructiveHint, true);
     const discovery = await client.callTool({ name: 'aism_discover', arguments: {} });

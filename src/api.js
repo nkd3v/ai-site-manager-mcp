@@ -61,10 +61,10 @@ export class SiteManagerApi {
 
   redact(text) { return String(text).replaceAll(this.#key, '[REDACTED]'); }
 
-  async request(method, path, { query, body, form } = {}) {
+  async #send(method, path, { query, body, form, accept = 'application/json' } = {}) {
     const url = endpointUrl(this.base, path, query);
     const headers = {
-      Accept: 'application/json',
+      Accept: accept,
       'User-Agent': 'AI-Site-Manager-MCP/1.0 (+https://github.com/nkd3v/ai-site-manager-mcp)',
       [this.authHeader]: this.authHeader === 'Authorization' ? `Bearer ${this.#key}` : this.#key,
     };
@@ -85,34 +85,24 @@ export class SiteManagerApi {
       await response.body?.cancel();
       throw new ApiError('API redirect refused. Configure the final HTTPS base URL; credentials are never forwarded through redirects.', response.status);
     }
-    const chunks = [];
-    let bytes = 0;
-    const reader = response.body?.getReader();
-    try {
-      if (reader) {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          bytes += value.length;
-          if (bytes > 16 * 1024 * 1024) {
-            await reader.cancel();
-            throw new ApiError('API response exceeds 16 MiB. Use pagination or _fields; verify any writes before retrying.', response.status);
-          }
-          chunks.push(Buffer.from(value));
-        }
-      }
-    } catch (error) {
-      if (error instanceof ApiError) throw error;
-      throw new ApiError('API response interrupted. Verify any writes before retrying.', response.status);
-    }
+    return response;
+  }
+
+  #parse(response, bytes) {
     let data;
-    try { data = JSON.parse(this.redact(Buffer.concat(chunks).toString('utf8'))); }
+    try { data = JSON.parse(this.redact(bytes.toString('utf8'))); }
     catch {
       throw new ApiError(`HTTP ${response.status}: API returned a non-JSON response. Check the host or firewall. For writes, verify state before retrying.`, response.status);
     }
     if (!response.ok) {
       throw new ApiError(this.redact(`HTTP ${response.status}: ${data?.message ?? data?.detail ?? data?.title ?? 'API request failed'}`), response.status, this.redact(data?.code ?? data?.error_name ?? 'aism_http_error'));
     }
+    return data;
+  }
+
+  async request(method, path, options = {}) {
+    const response = await this.#send(method, path, options);
+    const data = this.#parse(response, await readLimited(response, 16 * 1024 * 1024, 'API response exceeds 16 MiB. Use pagination or _fields; verify any writes before retrying.'));
     const pagination = {};
     for (const name of ['X-WP-Total', 'X-WP-TotalPages']) {
       if (response.headers.has(name)) pagination[name] = response.headers.get(name);
@@ -120,19 +110,61 @@ export class SiteManagerApi {
     return { status: response.status, headers: pagination, data };
   }
 
-  async upload(path, filePath, field, fields = {}) {
-    const info = await stat(filePath);
-    if (!info.isFile() || info.size < 1 || info.size > this.maxUploadBytes) throw new Error('Upload must be a nonempty regular file within WP_AI_MAX_UPLOAD_BYTES (default 32 MiB).');
-    const filename = basename(filePath).replace(/[\r\n"]/g, '_');
-    const extension = filename.split('.').at(-1).toLowerCase();
+  /** Download a binary response (migration files and packages) within WP_AI_MAX_UPLOAD_BYTES. */
+  async download(path, query) {
+    const response = await this.#send('GET', path, { query, accept: '*/*' });
+    const type = response.headers.get('content-type') ?? 'application/octet-stream';
+    // Errors are small JSON bodies; read them independently of the file size limit.
+    if (!response.ok || type.startsWith('application/json')) {
+      this.#parse(response, await readLimited(response, 1024 * 1024, 'API error response exceeds 1 MiB.'));
+      throw new ApiError('Expected a file download but received JSON. Check the companion plugin version.', response.status, 'aism_not_a_file');
+    }
+    const bytes = await readLimited(response, this.maxUploadBytes, 'Download exceeds WP_AI_MAX_UPLOAD_BYTES.');
+    const disposition = response.headers.get('content-disposition') ?? '';
+    const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? 'download.bin';
+    return { status: response.status, contentType: type.split(';')[0].trim(), filename: basename(filename), data: bytes };
+  }
+
+  async uploadBuffer(path, field, data, filename, fields = {}, contentType) {
+    if (data.length < 1 || data.length > this.maxUploadBytes) throw new Error('Upload must be nonempty and within WP_AI_MAX_UPLOAD_BYTES (default 32 MiB).');
+    const safeName = basename(filename).replace(/[\r\n"]/g, '_');
+    const extension = safeName.split('.').at(-1).toLowerCase();
     if (['pluginzip', 'themezip'].includes(field) && extension !== 'zip') throw new Error('Plugin and theme uploads require a .zip file.');
-    const data = await readFile(filePath);
-    if (data.length > this.maxUploadBytes) throw new Error('File exceeds WP_AI_MAX_UPLOAD_BYTES.');
     const form = new FormData();
-    form.append(field, new Blob([data], { type: MIME_TYPES[extension] ?? 'application/octet-stream' }), filename);
+    form.append(field, new Blob([data], { type: contentType ?? MIME_TYPES[extension] ?? 'application/octet-stream' }), safeName);
     for (const [name, value] of Object.entries(fields)) if (value !== undefined) form.append(name, String(value));
     return this.request('POST', path, { form });
   }
+
+  async upload(path, filePath, field, fields = {}) {
+    const info = await stat(filePath);
+    if (!info.isFile() || info.size < 1 || info.size > this.maxUploadBytes) throw new Error('Upload must be a nonempty regular file within WP_AI_MAX_UPLOAD_BYTES (default 32 MiB).');
+    return this.uploadBuffer(path, field, await readFile(filePath), basename(filePath), fields);
+  }
+}
+
+async function readLimited(response, limit, message) {
+  const chunks = [];
+  let bytes = 0;
+  const reader = response.body?.getReader();
+  try {
+    if (reader) {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        bytes += value.length;
+        if (bytes > limit) {
+          await reader.cancel();
+          throw new ApiError(message, response.status);
+        }
+        chunks.push(Buffer.from(value));
+      }
+    }
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw new ApiError('API response interrupted. Verify any writes before retrying.', response.status);
+  }
+  return Buffer.concat(chunks);
 }
 
 export async function apiFromEnv(env = process.env) {

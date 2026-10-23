@@ -1,6 +1,6 @@
 # AI Site Manager MCP
 
-An MCP server for the **AI Site Manager** WordPress plugin. Connect an MCP client to your site's scoped API key to work with posts, pages, custom post types, taxonomies, comments, media, approved settings, plugins and themes.
+An MCP server for the **AI Site Manager** WordPress plugin. Connect an MCP client to one or more sites' scoped API keys to work with posts, pages, custom post types, taxonomies, comments, media, approved settings, plugins and themes, and to migrate content between WordPress sites.
 
 This is a local stdio MCP adapter. The AI Site Manager plugin must already be installed and activated on your WordPress site. It connects to that plugin's HTTPS API; it does not install the WordPress plugin or provide a hosted MCP endpoint.
 
@@ -29,7 +29,7 @@ The server waits for an MCP client to communicate over stdin/stdout. It does not
 npx --yes github:nkd3v/ai-site-manager-mcp --version
 ```
 
-The package runs directly from GitHub; npm registry publication is not required. To pin the current release, use `github:nkd3v/ai-site-manager-mcp#v1.3.0` instead of the unpinned specifier. Use a full commit SHA for an immutable pin.
+The package runs directly from GitHub; npm registry publication is not required. To pin the current release, use `github:nkd3v/ai-site-manager-mcp#v1.4.0` instead of the unpinned specifier. Use a full commit SHA for an immutable pin.
 
 For a local install:
 
@@ -83,6 +83,34 @@ When run in a terminal, the server prompts for a missing `WP_AI_BASE` and, if ne
 
 Prompts go to stderr, keeping stdout available for MCP messages. Automatic prompting requires both stdin and stderr to be terminals. Desktop MCP clients and other noninteractive launches must supply the variables in their configuration; missing values produce a startup error listing the variables to set.
 
+## Several sites
+
+To work with more than one site, for example to migrate between them, set `WP_AI_SITES_FILE` to a JSON file naming each site. Keys stay in separate files or environment variables; inline `key` entries are rejected.
+
+```json
+{
+  "default": "old",
+  "sites": {
+    "old": { "base": "https://old.example.com/wp-json/ai-site-manager/v1", "key_file": "/absolute/path/old.key" },
+    "new": { "base": "https://new.example.com/?rest_route=/ai-site-manager/v1", "key_env": "NEW_SITE_KEY", "auth_header": "X-AISM-Key" }
+  }
+}
+```
+
+Every site tool accepts an optional `site` argument with one of these names; `aism_sites` lists them. Without `site`, tools use `default`. With several sites and no default, `site` is required, so a write never goes to a guessed site. `WP_AI_BASE` plus `WP_AI_KEY` or `WP_AI_KEY_FILE` can be combined with the file: it adds a site named `WP_AI_SITE_NAME` (default `default`), which becomes the default unless the file names one. `WP_AI_TIMEOUT_MS` and `WP_AI_MAX_UPLOAD_BYTES` apply to every site.
+
+## Migrate between WordPress sites
+
+Install companion 1.4.0+ on both sites. On the **source**, create a key with `migration:read`. On the **target**, create a key with `migration:read` and `migration:write`, plus `plugins:write`/`themes:write` if packages should be transferred and `migration:delete` if you want rollback. Both key owners need administrator capabilities (`manage_options`, `export`/`import`; `unfiltered_html` on the target for metadata and settings). Configure both sites as above, then ask the AI to migrate. The intended sequence is:
+
+1. `aism_migration_plan`: compares versions, themes, plugins, post types and taxonomies, detects earlier migrations and recommends options. For example, it suggests `match_slugs: true` when the target is a fresh install, so its default posts are replaced rather than duplicated.
+2. `aism_migration_transfer_package` for each required theme (parents are handled automatically) and each active plugin. It copies the exact installed files from the source, which covers custom and premium code, or installs from WordPress.org with `from: "wordpress.org"`.
+3. `aism_migration_run` with the returned `cursor` until `done` is true. Each call does as much as fits in `max_seconds`. The phases are terms → media (original files, same year/month folders, regenerated sizes) → all post types (including menus, templates, global styles and patterns) → comments → site settings (front page, permalinks, widgets, customizer) → finalize, which remaps IDs and rewrites URLs.
+4. `aism_migration_status` to compare counts, then review the target. Re-running `aism_migration_run`, optionally with `modified_after`, syncs later changes without duplicating anything.
+5. `aism_migration_rollback` if needed. It deletes what the migration created and restores the settings it changed.
+
+`aism_migration_copy` copies selected posts with their terms, featured images, embedded media and reusable blocks (as drafts by default). User accounts are not created; authors are matched by login, then email, then `default_author` or `author_map`. The source is only read. Media files go through the MCP process within `WP_AI_MAX_UPLOAD_BYTES` and the target's upload limit. Offloaded media that the source cannot serve locally is fetched from its public URL without credentials. See the companion's [migration guide](wordpress-plugin/ai-site-manager/docs/AI-GUIDE.md#migrate-between-sites-140) for what is and is not migrated.
+
 ## Configuration
 
 | Variable | Purpose | Default |
@@ -92,7 +120,9 @@ Prompts go to stderr, keeping stdout available for MCP messages. Automatic promp
 | `WP_AI_KEY_FILE` | Absolute path to a plain-text key file | Alternative to `WP_AI_KEY` |
 | `WP_AI_AUTH_HEADER` | `Authorization` or `X-AISM-Key` | `Authorization` |
 | `WP_AI_TIMEOUT_MS` | Request timeout, 1000–600000 milliseconds | `120000` |
-| `WP_AI_MAX_UPLOAD_BYTES` | Local upload limit, up to 1 GiB; WordPress/host limits also apply | `33554432` (32 MiB) |
+| `WP_AI_MAX_UPLOAD_BYTES` | Local upload and migration download limit, up to 1 GiB; WordPress/host limits also apply | `33554432` (32 MiB) |
+| `WP_AI_SITES_FILE` | JSON file of named sites (see [Several sites](#several-sites)) | Optional |
+| `WP_AI_SITE_NAME` | Name for the `WP_AI_BASE` site | `default` |
 
 ## Tools
 
@@ -106,6 +136,9 @@ Prompts go to stderr, keeping stdout available for MCP messages. Automatic promp
 | `aism_settings_list`, `aism_settings_get`, `aism_settings_update` | Read or replace values of exactly approved settings |
 | `aism_plugins_list`, `aism_plugin_install`, `aism_plugin_upload`, `aism_plugin_update`, `aism_plugin_action` | List/install/upload/activate/deactivate/update/delete plugins |
 | `aism_themes_list`, `aism_theme_install`, `aism_theme_upload`, `aism_theme_action` | List/install/upload/activate/update/delete themes |
+| `aism_sites` | List configured site connections |
+| `aism_migration_manifest`, `aism_migration_export`, `aism_migration_plan`, `aism_migration_status` | Inspect sites, raw export pages, migration plans and progress (read-only) |
+| `aism_migration_transfer_package`, `aism_migration_run`, `aism_migration_copy`, `aism_migration_rollback` | Transfer plugins/themes, migrate a whole site in resumable steps, copy selected posts, undo a migration |
 
 The authenticated site guide is also available as the MCP resource `aism://guide`. Successful tool results include `{status, headers, data}`; native pagination headers appear in `headers`. API failures set MCP `isError` and include the status and error code. Credentials are redacted from results.
 
@@ -144,7 +177,7 @@ The upload ZIP is built from an explicit allowlist of companion files; tests, cr
 uv run --system-certs scripts/package-plugin.py
 ```
 
-Tests exercise credential isolation, URL handling, pagination, redirects, uncertain writes, upload limits and real MCP tool/resource calls against simulated API responses. They never modify a live WordPress site. The source is plain JavaScript with no build or install scripts. Package contents are explicitly limited to source, documentation and license.
+`scripts/migration-e2e.mjs` runs a full two-site migration through the MCP server against disposable local WordPress sites; see the comments at its top. Tests exercise credential isolation, URL handling, pagination, redirects, uncertain writes, upload limits and real MCP tool/resource calls against simulated API responses. They never modify a live WordPress site. The source is plain JavaScript with no build or install scripts. Package contents are explicitly limited to source, documentation and license.
 
 Every push to `main` must increase the MCP and companion versions together and rebuild the companion ZIP. The Release workflow rejects unchanged or reused versions, runs validation, and publishes `v<version>` at the pushed commit with the MCP tarball, WordPress upload ZIP, and `SHA256SUMS`. Check that the workflow and release succeeded after each push. Repository contributors and agents must follow [AGENTS.md](AGENTS.md).
 

@@ -15,7 +15,7 @@ Paths in this guide are relative to the supplied base URL, usually `https://exam
 
 ## Permissions and boundaries
 
-Scopes are independent: `content:read|write|delete`, `media:read|write|delete`, `taxonomies:read|write|delete`, `comments:read|write|delete`, `plugins:read|write|delete`, `themes:read|write|delete`, and `settings:read|write`. Read permission does not allow editing. Write permission does not grant DELETE operations. Read and delete permissions do not grant writes. Write responses include the resulting resource. Plugin and theme deletion use POST actions and still require `plugins:delete` and `themes:delete` respectively.
+Scopes are independent: `content:read|write|delete`, `media:read|write|delete`, `taxonomies:read|write|delete`, `comments:read|write|delete`, `plugins:read|write|delete`, `themes:read|write|delete`, `migration:read|write|delete`, and `settings:read|write`. Read permission does not allow editing. Write permission does not grant DELETE operations. Read and delete permissions do not grant writes. Write responses include the resulting resource. Plugin and theme deletion use POST actions and still require `plugins:delete` and `themes:delete` respectively.
 
 Scopes supplement the selected user's CURRENT WordPress capabilities. A key never gains capabilities the user lacks. Changing the user's role, deleting the user, key expiration, or revocation takes effect on subsequent requests. `content:write` allows publishing if the user can publish. `plugins:write` permits installing/updating executable code as well as changing activation status, subject to WordPress capabilities. `themes:write` likewise permits installation/updating of executable code and switching the site theme. The user must explicitly enable these scopes in wp-admin. Existing keys do not gain theme permissions; issue a new key with the desired scopes.
 
@@ -140,6 +140,40 @@ curl --ca-native --fail-with-body -X POST "$WP_AI_BASE/themes/action" \
 
 Re-list themes to verify versions and activation after changes. Theme changes affect site appearance and may execute PHP; stay within the operator's request. After a timeout, inspect state before retrying. Configure filesystem access through the host if required; never send filesystem credentials to this API.
 
+## Migrate between sites (1.4.0+)
+
+Migration moves a site, or selected posts, from one AI Site Manager installation (the source) into another (the target). Both sites need companion 1.4.0+. The MCP adapter orchestrates it with `aism_migration_plan`, `aism_migration_transfer_package`, `aism_migration_run`, `aism_migration_copy`, `aism_migration_status` and `aism_migration_rollback`; the endpoints below are what it uses.
+
+Scopes: `migration:read` (source; manifest, export, file and package downloads), `migration:write` (target; begin, import, finalize) and `migration:delete` (target; rollback). The key owner needs `manage_options` plus WordPress's `export` capability to read and `import` to write. Importing is single-site only. Without `unfiltered_html`, imported content is filtered by WordPress, only structural metadata (`_thumbnail_id`, `_wp_page_template`, `_wp_attachment_image_alt`, `_menu_item_*`) is imported, and site settings are refused. `migration:read` exposes ALL content, including drafts, private posts, comment author emails and IPs, and the code of installed plugins and themes: grant it only for a migration.
+
+| Step | Endpoint | Notes |
+| --- | --- | --- |
+| Inspect | `GET /migration/manifest` | `site_uuid`, URLs, versions, themes, plugins, counts per post type/taxonomy, capabilities, limits, sources imported into this site |
+| Export | `GET /migration/export?kind=terms\|posts\|comments\|site` | Paged with `page`/`per_page` (≤100). Posts accept `post_type`, `ids`, `modified_after`, `include_trash`; terms accept `ids` (ancestors included). Responses include `authors` and `skipped_meta_keys` |
+| Original file | `GET /migration/file?id={attachment}` | Raw bytes of the original upload (pre-scaling); only files inside the uploads directory |
+| Package | `GET /migration/package?type=plugin\|theme&id=…` | ZIP of an installed plugin folder or theme; symlinks and VCS folders are skipped; AI Site Manager and root single-file plugins are refused |
+| Register source | `POST /migration/begin` | `{"source": <source manifest>}`. Rejects the same site |
+| Import | `POST /migration/import` | `{"source": uuid, "kind", "items", "authors", "options"}`; ≤100 items. Unmapped attachments are listed in `needs_file` |
+| Import a file | `POST /migration/import-file` | Multipart `source`, `item` (the attachment export item as JSON), optional `authors`/`options`, and `file`. Keeps the source year/month folder and regenerates sizes |
+| Finalize | `POST /migration/finalize` | `{"source": uuid, "limit": 100}`; repeat until `remaining` is 0 |
+| Status | `GET /migration/status?source=uuid` | Mapped/created/pending counts per object type and post type |
+| Roll back | `POST /migration/rollback` | `{"source": uuid, "limit": 50}`; repeat until `remaining` is 0 |
+
+Import options: `status` (`preserve` or `draft`: publicly viewable content becomes a draft; patterns, menus and templates stay usable), `on_existing` (`update` or `skip` for objects migrated before), `match_slugs` (adopt existing target posts with the same type and slug), `author_map` (`{"source_login":"target_login"}`) and `default_author` (target login). Terms always match an existing term with the same taxonomy and slug; templates, template parts and global styles match by slug and theme.
+
+How it works. The target keeps a map from each source object to its target object. Importing again updates the mapped object instead of creating a duplicate, so an interrupted run can simply be repeated, and `modified_after` gives an incremental sync before cutover. Imports store the source's raw content first. Finalize then rewrites each imported object exactly once:
+
+- Post parents, featured images, menu item parents and objects, comment parents, term parents and post–term assignments.
+- Block attributes: image/cover/video/audio/file `id`, media-text `mediaId`, gallery `ids`, `core/block` and `core/navigation` `ref`, navigation link `id`, page-list parent, latest-posts categories, and query loop include/exclude/parents/taxonomy IDs. Also `wp-image-N` classes and `[gallery ids]`, `[playlist ids]` and `[caption id]` shortcodes.
+- Site settings: front page, posts page, privacy page, site icon, default category, menu auto-add, theme mods (`custom_logo`, `custom_css_post_id`, `nav_menu_locations`, header image) and widgets (navigation menu, media, gallery and block widgets).
+- URLs: the source uploads, WordPress and home URLs become the target's, over http, https and protocol-relative forms, including JSON-escaped `\/` forms, in content, excerpts, comments, term descriptions, metadata and settings. Arrays and serialized values are rewritten as data, so serialized lengths stay valid. Renamed media files are mapped individually.
+
+References to objects that were not migrated are reported as `unresolved`. Unresolved parents and featured images are cleared; IDs inside content are left unchanged.
+
+What is migrated: every exportable post type (including attachments with their original files, navigation menu items, reusable blocks/patterns, navigation menus, templates, template parts, global styles, custom CSS and custom post types), all registered taxonomies, approved and pending comments, metadata, the active theme's mods, widgets and portable core settings (reading, writing, discussion, media, permalinks, timezone and formats), plus any options approved for the source key. Not migrated: user accounts (authors are matched by login, then email, then the default author), passwords, revisions, spam and trashed comments, metadata and options with credential-like names or PHP objects, must-use plugins, drop-ins, custom database tables and files outside uploads/plugins/themes. Post types and taxonomies must be registered on the target: install and activate their plugins or themes first.
+
+Rollback permanently deletes posts, media files, terms and comments that the migration created, restores every setting it changed (deleting options that did not exist before), and forgets the source. Objects adopted from pre-existing target content are kept, including the changes the import made to them.
+
 ## Errors, retries and verification
 
 Errors use WordPress's shape: `{"code":"...","message":"...","data":{"status":403}}`.
@@ -149,7 +183,7 @@ Errors use WordPress's shape: `{"code":"...","message":"...","data":{"status":40
 - 403 `aism_https_required`: use HTTPS. `aism_scope_required`: the key needs the named permission. Native capability errors: the selected user lacks access. `aism_option_not_allowed`: this option is not approved or is protected.
 - 404: unknown/unsupported route or missing object. WordPress can also hide inaccessible objects.
 - 405: unsupported operation (for example revision mutation).
-- 409 `aism_filesystem_unavailable`: host filesystem access needs configuration.
+- 409 `aism_filesystem_unavailable`: host filesystem access needs configuration. `aism_migration_not_started`: call `POST /migration/begin` first. `aism_same_site`: source and target are the same site.
 - 413: upload/body size limit. Respect host limits too.
 - 429 or 5xx: inspect the error, honor Retry-After if present, back off and retry only when appropriate. The plugin does not impose its own per-key request rate limit; the host or another plugin may.
 
