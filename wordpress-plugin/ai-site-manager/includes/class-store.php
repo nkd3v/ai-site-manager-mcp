@@ -64,7 +64,7 @@ final class AISM_Store {
 		foreach ( array( 'content', 'media', 'taxonomies', 'comments', 'plugins', 'themes', 'migration' ) as $group ) {
 			foreach ( array( 'read', 'write', 'delete' ) as $action ) { $result[] = "$group:$action"; }
 		}
-		return array_merge( $result, array( 'settings:read', 'settings:write' ) );
+		return array_merge( $result, array( 'settings:read', 'settings:write', 'users:read', 'users:write' ) );
 	}
 
 	public static function default_options() {

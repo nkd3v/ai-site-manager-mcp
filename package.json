@@ -1,7 +1,7 @@
 {
   "name": "ai-site-manager-mcp",
-  "version": "1.4.1",
-  "description": "MCP server for the AI Site Manager WordPress plugin: content, media, settings, plugins, themes and site-to-site migration.",
+  "version": "1.5.0",
+  "description": "MCP server for the AI Site Manager WordPress plugin: content, media, settings, plugins, themes, user quarantine and site-to-site migration.",
   "type": "module",
   "bin": { "ai-site-manager-mcp": "src/cli.js" },
   "exports": { ".": "./src/server.js" },

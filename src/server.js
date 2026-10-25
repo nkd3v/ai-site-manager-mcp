@@ -3,7 +3,7 @@ import * as z from 'zod/v4';
 import { SiteRegistry } from './sites.js';
 import * as migration from './migration.js';
 
-export const VERSION = '1.4.1';
+export const VERSION = '1.5.0';
 const resource = z.string().regex(/^[a-zA-Z0-9_-]+$/).refine(v => !['users', 'plugins', 'themes', 'settings', 'batch', 'application-passwords'].includes(v), 'Use a resource returned by discovery.');
 const id = z.number().int().positive();
 const scalar = z.union([z.string(), z.number(), z.boolean()]);
@@ -69,6 +69,17 @@ export function createServer(connection) {
     file_path: z.string().min(1).optional().describe('Operator-provided local ZIP path. ZIP updates require a plugin in its own top-level directory.'),
   }, (a, api) => a.file_path ? api.upload('/plugins/update', a.file_path, 'pluginzip', { plugin: a.plugin }) : api.request('POST', '/plugins/action', { body: { plugin: a.plugin, action: 'update' } }), false, true);
   tool('aism_plugin_action', 'Activate/deactivate/update/delete an installed plugin. Deletion requires plugins:delete and an inactive plugin. Updates use the WordPress-advertised package. AI Site Manager cannot manage itself; multisite mutations are unavailable.', { plugin: z.string().min(1), action: z.enum(['activate', 'deactivate', 'update', 'delete']) }, (a, api) => api.request('POST', '/plugins/action', { body: { plugin: a.plugin, action: a.action } }), false, true);
+
+  tool('aism_users_list', 'Review user accounts: login, email, roles, registration date, active login sessions (time, IP, browser), application password names and quarantine state. Never returns password hashes or tokens. Includes pagination headers. Requires users:read and list_users (companion 1.5.0+).', {
+    role: z.string().regex(/^[a-z0-9_-]+$/).optional().describe('Only users with this role, for example administrator.'),
+    search: z.string().max(100).optional().describe('Match login, email, display name or nicename.'),
+    page: z.number().int().positive().default(1), per_page: z.number().int().min(1).max(100).default(20),
+  }, (a, api) => api.request('GET', '/users', { query: { role: a.role, search: a.search, page: a.page, per_page: a.per_page } }));
+  tool('aism_user_get', 'Read one user account for review (same fields as aism_users_list). Requires users:read.', { id }, (a, api) => api.request('GET', `/users/${a.id}`));
+  tool('aism_user_quarantine', 'Lock a suspicious account without deleting it: saves and removes all its roles, signs out every session, deletes its application passwords, sets a random password and blocks all logins and password resets until restored. Refuses the key owner and the last active administrator. Use only on accounts the operator asked to disable. Requires users:write plus promote_users/edit_user (companion 1.5.0+).', {
+    id, reason: z.string().max(500).optional().describe('Short note stored with the quarantine record.'),
+  }, (a, api) => api.request('POST', `/users/${a.id}/quarantine`, { body: { reason: a.reason ?? '' } }), false, true);
+  tool('aism_user_restore', 'Lift a quarantine and restore the account\'s saved roles. The password stays random and deleted application passwords are not restored. Requires users:write.', { id }, (a, api) => api.request('POST', `/users/${a.id}/restore`, { body: {} }), false, true);
 
   tool('aism_themes_list', 'List installed themes with stylesheet identifiers, versions and active/inactive status. Requires themes:read and native theme access.', {}, (a, api) => api.request('GET', '/themes'));
   tool('aism_theme_install', 'Install a WordPress.org theme inactive. Core may install a missing parent. Requires themes:write and install_themes. Installation adds executable code.', { slug: z.string().regex(/^[a-z0-9-]+$/) }, (a, api) => api.request('POST', '/themes/install', { body: { slug: a.slug } }), false, true);

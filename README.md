@@ -1,6 +1,6 @@
 # AI Site Manager MCP
 
-An MCP server for the **AI Site Manager** WordPress plugin. Connect an MCP client to one or more sites' scoped API keys to work with posts, pages, custom post types, taxonomies, comments, media, approved settings, plugins and themes, and to migrate content between WordPress sites.
+An MCP server for the **AI Site Manager** WordPress plugin. Connect an MCP client to one or more sites' scoped API keys to work with posts, pages, custom post types, taxonomies, comments, media, approved settings, plugins and themes, to review and quarantine user accounts, and to migrate content between WordPress sites.
 
 This is a local stdio MCP adapter. The AI Site Manager plugin must already be installed and activated on your WordPress site. It connects to that plugin's HTTPS API; it does not install the WordPress plugin or provide a hosted MCP endpoint.
 
@@ -29,7 +29,7 @@ The server waits for an MCP client to communicate over stdin/stdout. It does not
 npx --yes github:nkd3v/ai-site-manager-mcp --version
 ```
 
-The package runs directly from GitHub; npm registry publication is not required. To pin the current release, use `github:nkd3v/ai-site-manager-mcp#v1.4.1` instead of the unpinned specifier. Use a full commit SHA for an immutable pin.
+The package runs directly from GitHub; npm registry publication is not required. To pin the current release, use `github:nkd3v/ai-site-manager-mcp#v1.5.0` instead of the unpinned specifier. Use a full commit SHA for an immutable pin.
 
 For a local install:
 
@@ -51,7 +51,7 @@ Updating the MCP adapter and the WordPress companion are separate steps. An alre
 
    For the theme-management update, expect `1.1.0` or later. npm caches packages; [`--prefer-online`](https://docs.npmjs.com/cli/npm-exec/#prefer-online) forces it to check for updates. If your MCP configuration pins an older tag or commit, such as `#v1.0.0`, change that package specifier too; checking the unpinned version does not update a pinned configuration. Use the unpinned specifier to follow the repository's default branch, or pin the commit you intend to run.
 3. From companion `1.3.0`, WordPress offers new releases in **Dashboard → Updates** and the plugin list, and can update the companion automatically if you enable auto-updates for it. It verifies each ZIP against the release's `SHA256SUMS`. For older companions, or to update manually: download the [current WordPress companion ZIP](releases/ai-site-manager.zip?raw=true). In **WordPress → Plugins → Add New → Upload Plugin**, upload it and choose **Replace current with uploaded** when prompted. Theme support requires companion version `1.1.0` or later. Replacing the plugin preserves its keys and settings; do not uninstall it as part of the update.
-4. With companion `1.4.1` or later, open **Settings → AI Site Manager**, choose **Edit permissions** beside an active key, adjust its scopes and approved option names, then **Save permissions**. Changes apply to the next API request using the same key; its owner and expiry are preserved. For theme access, enable the needed `themes:read`, `themes:write` and/or `themes:delete` scopes. Older companions require creating a replacement key and updating your client credentials.
+4. With companion `1.4.1` or later, open **Settings → AI Site Manager**, choose **Edit permissions** beside an active key, adjust its scopes and approved option names, then **Save permissions**. Changes apply to the next API request using the same key; its owner and expiry are preserved. For theme access, enable the needed `themes:read`, `themes:write` and/or `themes:delete` scopes. To review or quarantine user accounts (companion 1.5.0+), enable `users:read` and, only when needed, `users:write`. Older companions require creating a replacement key and updating your client credentials.
 5. Restart or reconnect the MCP server so the client refreshes its tool list and credentials. Call `aism_discover` to verify the companion version and key scopes, then `aism_themes_list` if you granted `themes:read`.
 
 The MCP configuration below includes `--prefer-online` so subsequent launches check for updates. This does not update an already running process. If you installed the adapter globally instead of using npx, rerun `npm install --global github:nkd3v/ai-site-manager-mcp`, check `ai-site-manager-mcp --version`, and restart it.
@@ -136,6 +136,8 @@ Install companion 1.4.0+ on both sites. On the **source**, create a key with `mi
 | `aism_settings_list`, `aism_settings_get`, `aism_settings_update` | Read or replace values of exactly approved settings |
 | `aism_plugins_list`, `aism_plugin_install`, `aism_plugin_upload`, `aism_plugin_update`, `aism_plugin_action` | List/install/upload/activate/deactivate/update/delete plugins |
 | `aism_themes_list`, `aism_theme_install`, `aism_theme_upload`, `aism_theme_action` | List/install/upload/activate/update/delete themes |
+| `aism_users_list`, `aism_user_get` | Review accounts: roles, active login sessions (time, IP, browser), application password names and quarantine state (companion 1.5.0+) |
+| `aism_user_quarantine`, `aism_user_restore` | Lock a suspicious account (remove and save its roles, end sessions, delete application passwords, randomize its password, block logins) or restore its roles |
 | `aism_sites` | List configured site connections |
 | `aism_migration_manifest`, `aism_migration_export`, `aism_migration_plan`, `aism_migration_status` | Inspect sites, raw export pages, migration plans and progress (read-only) |
 | `aism_migration_transfer_package`, `aism_migration_run`, `aism_migration_copy`, `aism_migration_rollback` | Transfer plugins/themes, migrate a whole site in resumable steps, copy selected posts, undo a migration |
@@ -144,7 +146,7 @@ The authenticated site guide is also available as the MCP resource `aism://guide
 
 Start with `aism_discover`, then `aism_schema` for the relevant resource. `aism_content_create` defaults posts and pages to `draft`; publication requires an explicit `status`. Native JSON fields and query parameters pass through to the plugin. Use `context: "edit"` to read raw Gutenberg content; preserve it when editing. `aism_content_update` sends only the supplied fields. Structured settings updates replace the whole value, so read immediately before editing.
 
-The server exposes all tools; the API independently enforces the key's scopes, approved option names and owner's current WordPress capabilities on every request. Read scopes do not permit edits or deletions. Plugin and theme installation adds executable code; grant those permissions only when intended. The gateway has no arbitrary SQL, PHP execution, user administration, private metadata access or remote-URL fetching. The tool hints identify reads and destructive operations; clients must still honor the operator's authorization.
+The server exposes all tools; the API independently enforces the key's scopes, approved option names and owner's current WordPress capabilities on every request. Read scopes do not permit edits or deletions. Plugin and theme installation adds executable code; grant those permissions only when intended. The gateway has no arbitrary SQL, PHP execution, user creation/deletion/role editing, private metadata access or remote-URL fetching; the only account change is the reversible quarantine, which needs the `users:write` scope. The tool hints identify reads and destructive operations; clients must still honor the operator's authorization.
 
 Use `aism_plugin_update` with `plugin` from `aism_plugins_list`. Omit `file_path` for a WordPress-advertised update, or provide an operator-supplied local ZIP to replace that installed plugin (both MCP and companion 1.2.0+). The ZIP must have the same top-level plugin folder and main PHP filename and a strictly newer version. ZIP updates require `plugins:write` plus `update_plugins` and `upload_plugins`, preserve active/inactive status, and reject AI Site Manager itself, multisite mutations, incompatible packages and single-file plugins stored directly in the plugins root. `aism_plugin_upload` remains for new inactive installations. Re-list plugins after updating; inspect state after timeouts before retrying.
 

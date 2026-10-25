@@ -15,11 +15,11 @@ Paths in this guide are relative to the supplied base URL, usually `https://exam
 
 ## Permissions and boundaries
 
-Scopes are independent: `content:read|write|delete`, `media:read|write|delete`, `taxonomies:read|write|delete`, `comments:read|write|delete`, `plugins:read|write|delete`, `themes:read|write|delete`, `migration:read|write|delete`, and `settings:read|write`. Read permission does not allow editing. Write permission does not grant DELETE operations. Read and delete permissions do not grant writes. Write responses include the resulting resource. Plugin and theme deletion use POST actions and still require `plugins:delete` and `themes:delete` respectively.
+Scopes are independent: `content:read|write|delete`, `media:read|write|delete`, `taxonomies:read|write|delete`, `comments:read|write|delete`, `plugins:read|write|delete`, `themes:read|write|delete`, `migration:read|write|delete`, `settings:read|write`, and `users:read|write` (1.5.0+). Read permission does not allow editing. Write permission does not grant DELETE operations. Read and delete permissions do not grant writes. Write responses include the resulting resource. Plugin and theme deletion use POST actions and still require `plugins:delete` and `themes:delete` respectively.
 
 Scopes supplement the selected user's CURRENT WordPress capabilities. A key never gains capabilities the user lacks. Changing the user's role, deleting the user, key expiration, or revocation takes effect on subsequent requests. `content:write` allows publishing if the user can publish. `plugins:write` permits installing/updating executable code as well as changing activation status, subject to WordPress capabilities. `themes:write` likewise permits installation/updating of executable code and switching the site theme. The user must explicitly enable these scopes in wp-admin. Existing keys do not gain theme permissions; issue a new key with the desired scopes.
 
-The gateway uses WordPress APIs for posts/postmeta, terms/termmeta/taxonomy relationships, comments/commentmeta, media, and approved options. There is no arbitrary SQL, table mutation endpoint, PHP/file editor, user-management endpoint, or general proxy. Only REST-exposed post types and taxonomies in `wp/v2` are supported. Unregistered/private custom fields require the site's developer to register them with `show_in_rest` and appropriate authorization callbacks first. This API does not bypass those callbacks.
+The gateway uses WordPress APIs for posts/postmeta, terms/termmeta/taxonomy relationships, comments/commentmeta, media, and approved options. There is no arbitrary SQL, table mutation endpoint, PHP/file editor, user creation/deletion/role-editing endpoint, or general proxy. The only account changes are the reversible quarantine and restore described in [Review and quarantine user accounts](#review-and-quarantine-user-accounts-150). Only REST-exposed post types and taxonomies in `wp/v2` are supported. Unregistered/private custom fields require the site's developer to register them with `show_in_rest` and appropriate authorization callbacks first. This API does not bypass those callbacks.
 
 Settings are approved by exact `option_name` for each key. Credential-like names and core security/identity/code-loading options are blocked. Custom plugin settings can contain sensitive data or powerful configuration; only use operator-approved options and their schemas. No option deletion or arbitrary creation: new options must be registered with WordPress first. Site URL, admin email, roles, plugin activation flags and this plugin's controls cannot be changed through `/settings`; use the plugin and theme endpoints for supported operations.
 
@@ -174,6 +174,23 @@ What is migrated: every exportable post type (including attachments with their o
 
 Rollback permanently deletes posts, media files, terms and comments that the migration created, restores every setting it changed (deleting options that did not exist before), and forgets the source. Objects adopted from pre-existing target content are kept, including the changes the import made to them.
 
+## Review and quarantine user accounts (1.5.0+)
+
+Use these for incident response, for example when an unknown administrator appears. `users:read` and `users:write` are never selected by default. The key owner needs `list_users` to read, and `promote_users` plus `edit_user` for the target account to quarantine or restore. Account changes are single-site only.
+
+| Operation | Method and path | Notes |
+| --- | --- | --- |
+| List | `GET /users` | `page`, `per_page` (≤100), `role`, `search` (login, email, display name). Pagination headers included |
+| Read | `GET /users/{id}` | One account |
+| Quarantine | `POST /users/{id}/quarantine` | `{"reason": "..."}` (optional, ≤500 characters) |
+| Restore | `POST /users/{id}/restore` | `{}` |
+
+Each account includes `id`, `login`, `email`, `display_name`, `url`, `registered_utc`, `roles`, `administrator`, `posts`, `sessions` (login and expiry time, IP and browser of each active login), `application_passwords` (name, created, last used, last IP) and `quarantine` (`null`, or the time, reason, acting user/key and previous roles). Password hashes, session tokens and application password hashes are never returned.
+
+Quarantine keeps the account and its content but: saves its roles and capabilities, removes all of them, ends every login session, deletes its application passwords, sets a random password, and blocks password login, cookie and application-password authentication, password resets and any AI Site Manager key the account owns. It refuses the key owner's own account and the last active administrator. Repeating it returns `changed: false`. Restore puts the saved roles and capabilities back and lifts the block; the password stays random and deleted application passwords are not recreated, so the owner must reset the password. Administrators can also choose **Lift quarantine** on the account in **Users**.
+
+Quarantine is containment, not cleanup. Before restoring or deleting an account, check what it may have changed: plugins, themes, content, other accounts and files outside WordPress. Quarantine accounts only when the operator asks.
+
 ## Errors, retries and verification
 
 Errors use WordPress's shape: `{"code":"...","message":"...","data":{"status":403}}`.
@@ -183,7 +200,7 @@ Errors use WordPress's shape: `{"code":"...","message":"...","data":{"status":40
 - 403 `aism_https_required`: use HTTPS. `aism_scope_required`: the key needs the named permission. Native capability errors: the selected user lacks access. `aism_option_not_allowed`: this option is not approved or is protected.
 - 404: unknown/unsupported route or missing object. WordPress can also hide inaccessible objects.
 - 405: unsupported operation (for example revision mutation).
-- 409 `aism_filesystem_unavailable`: host filesystem access needs configuration. `aism_migration_not_started`: call `POST /migration/begin` first. `aism_same_site`: source and target are the same site.
+- 409 `aism_filesystem_unavailable`: host filesystem access needs configuration. `aism_last_administrator`: quarantining this account would leave no active administrator. `aism_migration_not_started`: call `POST /migration/begin` first. `aism_same_site`: source and target are the same site.
 - 413: upload/body size limit. Respect host limits too.
 - 429 or 5xx: inspect the error, honor Retry-After if present, back off and retry only when appropriate. The plugin does not impose its own per-key request rate limit; the host or another plugin may.
 
