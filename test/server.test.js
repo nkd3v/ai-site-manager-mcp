@@ -22,7 +22,7 @@ test('real MCP handshake, tool schemas, validation, defaults, errors and guide r
     await server.connect(serverTransport);
     await client.connect(clientTransport);
     const listing = await client.listTools();
-    assert.equal(listing.tools.length, 35);
+    assert.equal(listing.tools.length, 42);
     assert.equal(listing.tools.find(t => t.name === 'aism_discover').annotations.readOnlyHint, true);
     assert.equal(listing.tools.find(t => t.name === 'aism_content_delete').annotations.destructiveHint, true);
     const discovery = await client.callTool({ name: 'aism_discover', arguments: {} });
@@ -210,4 +210,66 @@ test('user tools review accounts and quarantine or restore one by ID', async () 
   } finally {
     await client.close(); await server.close();
   }
+});
+
+test('database, diagnostics and maintenance tools send bounded requests with correct hints', async () => {
+  const requests = [];
+  const api = new SiteManagerApi({ base: 'https://example.test/wp-json/ai-site-manager/v1', key: 'test-key', fetchImpl: async (url, options) => {
+    requests.push({ url, ...options });
+    if (url.pathname.endsWith('/database/query') && JSON.parse(options.body).sql.includes('wp_users')) {
+      return Response.json({ code: 'aism_sql_protected', message: 'Queries cannot reference wp_users.' }, { status: 403 });
+    }
+    return Response.json({ ok: true });
+  } });
+  const server = createServer(api);
+  const client = new Client({ name: 'test-client', version: '1.0.0' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  try {
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    const tools = Object.fromEntries((await client.listTools()).tools.map(t => [t.name, t]));
+    for (const name of ['aism_db_tables', 'aism_db_table', 'aism_db_query', 'aism_diagnostics', 'aism_cron_list', 'aism_logs']) {
+      assert.equal(tools[name].annotations.readOnlyHint, true, name);
+    }
+    assert.equal(tools.aism_maintenance.annotations.readOnlyHint, false);
+    assert.equal(tools.aism_maintenance.annotations.destructiveHint, false);
+
+    await client.callTool({ name: 'aism_db_tables', arguments: {} });
+    assert.equal(requests.at(-1).method, 'GET');
+    assert.ok(requests.at(-1).url.pathname.endsWith('/database/tables'));
+    await client.callTool({ name: 'aism_db_table', arguments: { table: 'wp_traffic_log' } });
+    assert.ok(requests.at(-1).url.pathname.endsWith('/database/tables/wp_traffic_log'));
+    await client.callTool({ name: 'aism_db_query', arguments: { sql: 'SELECT COUNT(*) FROM wp_traffic_log' } });
+    assert.equal(requests.at(-1).method, 'POST');
+    assert.deepEqual(JSON.parse(requests.at(-1).body), { sql: 'SELECT COUNT(*) FROM wp_traffic_log', max_rows: 100, max_value_bytes: 4096, timeout_seconds: 10 });
+    const denied = await client.callTool({ name: 'aism_db_query', arguments: { sql: 'SELECT * FROM wp_users' } });
+    assert.equal(denied.isError, true);
+    assert.equal(denied.structuredContent.code, 'aism_sql_protected');
+
+    await client.callTool({ name: 'aism_diagnostics', arguments: {} });
+    assert.equal(requests.at(-1).url.searchParams.has('site_health'), false);
+    await client.callTool({ name: 'aism_diagnostics', arguments: { site_health: true } });
+    assert.equal(requests.at(-1).url.searchParams.get('site_health'), '1');
+    await client.callTool({ name: 'aism_cron_list', arguments: {} });
+    assert.ok(requests.at(-1).url.pathname.endsWith('/diagnostics/cron'));
+    await client.callTool({ name: 'aism_logs', arguments: { search: 'Fatal' } });
+    assert.ok(requests.at(-1).url.pathname.endsWith('/diagnostics/logs'));
+    assert.deepEqual(Object.fromEntries(requests.at(-1).url.searchParams), { source: 'debug', lines: '200', search: 'Fatal' });
+    await client.callTool({ name: 'aism_maintenance', arguments: { action: 'run_cron', hook: 'traffic_log_analyze_history' } });
+    assert.deepEqual(JSON.parse(requests.at(-1).body), { action: 'run_cron', hook: 'traffic_log_analyze_history' });
+    await client.callTool({ name: 'aism_maintenance', arguments: { action: 'flush_cache' } });
+    assert.deepEqual(JSON.parse(requests.at(-1).body), { action: 'flush_cache' });
+
+    const count = requests.length;
+    for (const [name, args] of [
+      ['aism_db_query', { sql: 'SELECT 1', max_rows: 5000 }], ['aism_db_query', { sql: '' }], ['aism_db_table', { table: '../wp_users' }],
+      ['aism_logs', { source: 'wp-config' }], ['aism_logs', { lines: 0 }], ['aism_maintenance', { action: 'drop_database' }], ['aism_maintenance', { action: 'run_cron', key: 'not-a-key' }],
+    ]) {
+      try {
+        const result = await client.callTool({ name, arguments: args });
+        assert.equal(result.isError, true, name);
+      } catch (error) { assert.match(error.message, /valid|invalid|small|big|enum|expected|too/i); }
+    }
+    assert.equal(requests.length, count);
+  } finally { await client.close(); await server.close(); }
 });

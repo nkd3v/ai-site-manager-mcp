@@ -19,7 +19,7 @@ Scopes are independent: `content:read|write|delete`, `media:read|write|delete`, 
 
 Scopes supplement the selected user's CURRENT WordPress capabilities. A key never gains capabilities the user lacks. Changing the user's role, deleting the user, key expiration, or revocation takes effect on subsequent requests. `content:write` allows publishing if the user can publish. `plugins:write` permits installing/updating executable code as well as changing activation status, subject to WordPress capabilities. `themes:write` likewise permits installation/updating of executable code and switching the site theme. The user must explicitly enable these scopes in wp-admin. Existing keys do not gain theme permissions; issue a new key with the desired scopes.
 
-The gateway uses WordPress APIs for posts/postmeta, terms/termmeta/taxonomy relationships, comments/commentmeta, media, and approved options. There is no arbitrary SQL, table mutation endpoint, PHP/file editor, user creation/deletion/role-editing endpoint, or general proxy. The only account changes are the reversible quarantine and restore described in [Review and quarantine user accounts](#review-and-quarantine-user-accounts-150). Only REST-exposed post types and taxonomies in `wp/v2` are supported. Unregistered/private custom fields require the site's developer to register them with `show_in_rest` and appropriate authorization callbacks first. This API does not bypass those callbacks.
+The gateway uses WordPress APIs for posts/postmeta, terms/termmeta/taxonomy relationships, comments/commentmeta, media, and approved options. There is no SQL write access, table mutation endpoint, PHP/file editor, user creation/deletion/role-editing endpoint, or general proxy. Read-only SQL is available with `database:read`; see [Database, diagnostics and maintenance](#database-diagnostics-and-maintenance-160). The only account changes are the reversible quarantine and restore described in [Review and quarantine user accounts](#review-and-quarantine-user-accounts-150). Only REST-exposed post types and taxonomies in `wp/v2` are supported. Unregistered/private custom fields require the site's developer to register them with `show_in_rest` and appropriate authorization callbacks first. This API does not bypass those callbacks.
 
 Settings are approved by exact `option_name` for each key. Credential-like names and core security/identity/code-loading options are blocked. Custom plugin settings can contain sensitive data or powerful configuration; only use operator-approved options and their schemas. No option deletion or arbitrary creation: new options must be registered with WordPress first. Site URL, admin email, roles, plugin activation flags and this plugin's controls cannot be changed through `/settings`; use the plugin and theme endpoints for supported operations.
 
@@ -190,6 +190,43 @@ Each account includes `id`, `login`, `email`, `display_name`, `url`, `registered
 Quarantine keeps the account and its content but: saves its roles and capabilities, removes all of them, ends every login session, deletes its application passwords, sets a random password, and blocks password login, cookie and application-password authentication, password resets and any AI Site Manager key the account owns. It refuses the key owner's own account and the last active administrator. Repeating it returns `changed: false`. Restore puts the saved roles and capabilities back and lifts the block; the password stays random and deleted application passwords are not recreated, so the owner must reset the password. Administrators can also choose **Lift quarantine** on the account in **Users**.
 
 Quarantine is containment, not cleanup. Before restoring or deleting an account, check what it may have changed: plugins, themes, content, other accounts and files outside WordPress. Quarantine accounts only when the operator asks.
+
+## Database, diagnostics and maintenance (1.6.0+)
+
+Use these to answer questions the content APIs cannot: how many rows a plugin stored, whether a background job is stuck, what an error says, or which plugin version is running. The three permissions are separate, never selected by default, and need a key owner with `manage_options`.
+
+### Read the database (`database:read`)
+
+| Operation | Method and path | Notes |
+| --- | --- | --- |
+| List tables | `GET /database/tables` | Name, engine, approximate rows, data/index bytes, `core`, `query_blocked` |
+| Describe a table | `GET /database/tables/{table}` | Columns, indexes and exact row count |
+| Query | `POST /database/query` | `{"sql": "...", "max_rows": 100, "max_value_bytes": 4096, "timeout_seconds": 10}` |
+
+Queries must be one `SELECT`, `WITH`, `TABLE`, `SHOW`, `DESCRIBE`/`DESC` or `EXPLAIN` statement. They run in a read-only transaction with a server-side time limit (1–30 seconds), and only `max_rows` rows (≤1000) are read. The result is `columns` plus `rows` (arrays in column order), `row_count`, `truncated` (more rows existed), `values_truncated` and `redacted_values`. Values longer than `max_value_bytes` are cut; binary values are returned as `base64:...`.
+
+Rejected with 400 `aism_sql_rejected`: comments, several statements, backslashes, variable assignment, `INTO`, locking clauses (`FOR UPDATE`, `LOCK IN SHARE MODE`), any write or administrative keyword, `SHOW` statements other than tables, columns, indexes, table definitions, status, variables, warnings and engines, and functions with side effects or delays (`SLEEP`, `BENCHMARK`, `GET_LOCK`, `LOAD_FILE` and similar). Rejected with 403 `aism_sql_protected`: the users, user meta and API key tables (use the users API), other databases on the server, `mysql`, `performance_schema`, `sys` and the process list. `information_schema` is readable. Values of options or meta whose names look secret (password, token, API key, salt, session…) and anything that looks like a password hash are replaced with `[redacted]` on a best-effort basis; other plugin settings are readable, so treat results as private. The SQL text of every query, including rejected ones, is stored in the site's API activity log.
+
+Use the table prefix from `GET /database/tables`. Prefer `COUNT(*)`, `GROUP BY` and `LIMIT` over reading large tables, and `aism_db_table` before writing a query against an unfamiliar table. Use `LIKE ... ESCAPE '!'` when a pattern needs a literal `_` or `%`. Database writes are not available; change data through the plugin's own settings or the content APIs.
+
+### Diagnostics (`diagnostics:read`)
+
+| Operation | Method and path | Notes |
+| --- | --- | --- |
+| Overview | `GET /diagnostics` | WordPress, PHP, server and database versions and limits; debug, cron, cache and file-modification constants; theme, plugins and MU plugins with versions; drop-ins; cron summary; log files. Add `site_health=1` to run the direct Site Health tests (slower; loopback tests are skipped) |
+| Scheduled events | `GET /diagnostics/cron` | Every WP-Cron event: hook, `key`, next run, `overdue_seconds`, schedule, arguments and `has_callbacks` (false usually means the plugin that scheduled it is gone) |
+| Error logs | `GET /diagnostics/logs` | `source=debug` (WP_DEBUG_LOG) or `php` (PHP `error_log`), `lines` 1–1000, optional `search` (case-insensitive, scans up to the last 4 MiB) |
+
+Only those two configured log files can be read. If none is configured, `GET /diagnostics` says so; the operator can enable `WP_DEBUG` and `WP_DEBUG_LOG` in wp-config.php.
+
+### Maintenance (`maintenance:write`)
+
+`POST /maintenance` with one `action`:
+
+- `run_cron` with `hook` (and `key` when the hook has several argument sets, or `timestamp`): runs one event that is already scheduled, the same way WP-Cron does — without a signed-in user, with `wp_doing_cron()` true, rescheduling recurring events and consuming single events. Use it on hosts where WP-Cron does not run on its own, or to finish a stuck background job. Only events listed by `/diagnostics/cron` can run; arbitrary hooks are refused. The response includes elapsed time, any exception and captured output.
+- `flush_cache`: empties the object cache.
+- `flush_rewrite_rules`: regenerates permalink rules (soft flush; .htaccess is not rewritten).
+- `delete_expired_transients`: removes expired transients and reports how many option rows were removed.
 
 ## Errors, retries and verification
 

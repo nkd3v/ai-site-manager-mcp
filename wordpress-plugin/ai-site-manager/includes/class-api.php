@@ -19,6 +19,8 @@ final class AISM_API {
 			'/migration/(?P<step>manifest|export|file|package|status)' => 'GET', '/migration/(?P<step>begin|import|import-file|finalize|rollback)' => 'POST',
 			'/settings' => 'GET', '/settings/(?P<option>[a-zA-Z0-9_.-]+)' => 'GET,PUT',
 			'/users' => 'GET', '/users/(?P<user_id>[1-9][0-9]*)' => 'GET', '/users/(?P<user_id>[1-9][0-9]*)/(?P<user_action>quarantine|restore)' => 'POST',
+			'/database/tables' => 'GET', '/database/tables/(?P<table>[A-Za-z0-9_$]{1,64})' => 'GET', '/database/query' => 'POST',
+			'/diagnostics' => 'GET', '/diagnostics/(?P<section>cron|logs)' => 'GET', '/maintenance' => 'POST',
 			'/wp/(?P<resource>[a-zA-Z0-9_-]+)(?:/(?P<object_id>[1-9][0-9]*|[a-zA-Z_-]+))?(?:/(?P<subresource>revisions)(?:/(?P<revision_id>[1-9][0-9]*))?)?' => 'GET,POST,PUT,PATCH,DELETE',
 		) as $route => $methods ) {
 			register_rest_route( self::NS, $route, array( 'methods' => $methods, 'callback' => array( $this, 'dispatch' ), 'permission_callback' => array( $this, 'permission' ) ) );
@@ -88,6 +90,9 @@ final class AISM_API {
 		}
 		if ( preg_match( '#^/' . self::NS . '/settings(?:/|$)#', $route ) ) { return 'GET' === $method ? 'settings:read' : 'settings:write'; }
 		if ( preg_match( '#^/' . self::NS . '/users(?:/|$)#', $route ) ) { return 'GET' === $method ? 'users:read' : 'users:write'; }
+		if ( preg_match( '#^/' . self::NS . '/database/#', $route ) ) { return 'database:read'; }
+		if ( preg_match( '#^/' . self::NS . '/diagnostics(?:/|$)#', $route ) ) { return 'diagnostics:read'; }
+		if ( '/' . self::NS . '/maintenance' === $route ) { return 'maintenance:write'; }
 		if ( preg_match( '#^/' . self::NS . '/migration/#', $route ) ) { return 'GET' === $method ? 'migration:read' : ( '/' . self::NS . '/migration/rollback' === $route ? 'migration:delete' : 'migration:write' ); }
 		if ( 0 !== strpos( $route, '/' . self::NS . '/wp/' ) ) { return ''; }
 		$url = $request->get_url_params();
@@ -118,6 +123,8 @@ final class AISM_API {
 			elseif ( '/settings' === $route || 0 === strpos( $route, '/settings/' ) ) { $result = $this->settings( $request, $key ); }
 			elseif ( 0 === strpos( $route, '/migration/' ) ) { $result = AISM_Migration::dispatch( $request, $route, $key ); }
 			elseif ( '/users' === $route || 0 === strpos( $route, '/users/' ) ) { $result = AISM_Users::dispatch( $request, $route, $key ); }
+			elseif ( 0 === strpos( $route, '/database/' ) ) { $result = AISM_Database::dispatch( $request, $route ); }
+			elseif ( '/maintenance' === $route || '/diagnostics' === $route || 0 === strpos( $route, '/diagnostics/' ) ) { $result = AISM_Diagnostics::dispatch( $request, $route ); }
 			else { $result = $this->forward( $request ); }
 			$response = is_wp_error( $result ) ? rest_convert_error_to_response( $result ) : rest_ensure_response( $result );
 			AISM_Store::audit( $key, $request, $response->get_status() );
@@ -158,10 +165,10 @@ final class AISM_API {
 			'plugin_version' => AISM_VERSION, 'wordpress_version' => get_bloginfo( 'version' ), 'base_url' => rest_url( self::NS ),
 			'key' => array( 'id' => (int) $key['id'], 'name' => $key['name'], 'user_id' => (int) $key['user_id'], 'scopes' => $key['scopes'], 'expires_at_utc' => $key['expires_at'] ),
 			'resources' => $this->resources(), 'approved_options' => array_values( array_filter( $key['option_names'], array( 'AISM_Store', 'option_allowed' ) ) ),
-			'endpoints' => array( 'GET /guide', 'GET /schema?resource=posts', 'GET /settings', 'GET|PUT /settings/{option}', 'GET|POST /wp/{resource}', 'GET|POST|PUT|PATCH|DELETE /wp/{resource}/{id}', 'GET /wp/{resource}/{id}/revisions', 'GET /plugins', 'POST /plugins/install', 'POST /plugins/upload', 'POST /plugins/update', 'POST /plugins/action', 'GET /themes', 'POST /themes/install', 'POST /themes/upload', 'POST /themes/action', 'GET /migration/manifest', 'GET /migration/export?kind=terms|posts|comments|site', 'GET /migration/file?id={attachment}', 'GET /migration/package?type=plugin|theme&id={identifier}', 'GET /migration/status', 'POST /migration/begin', 'POST /migration/import', 'POST /migration/import-file', 'POST /migration/finalize', 'POST /migration/rollback', 'GET /users', 'GET /users/{id}', 'POST /users/{id}/quarantine', 'POST /users/{id}/restore' ),
+			'endpoints' => array( 'GET /guide', 'GET /schema?resource=posts', 'GET /settings', 'GET|PUT /settings/{option}', 'GET|POST /wp/{resource}', 'GET|POST|PUT|PATCH|DELETE /wp/{resource}/{id}', 'GET /wp/{resource}/{id}/revisions', 'GET /plugins', 'POST /plugins/install', 'POST /plugins/upload', 'POST /plugins/update', 'POST /plugins/action', 'GET /themes', 'POST /themes/install', 'POST /themes/upload', 'POST /themes/action', 'GET /migration/manifest', 'GET /migration/export?kind=terms|posts|comments|site', 'GET /migration/file?id={attachment}', 'GET /migration/package?type=plugin|theme&id={identifier}', 'GET /migration/status', 'POST /migration/begin', 'POST /migration/import', 'POST /migration/import-file', 'POST /migration/finalize', 'POST /migration/rollback', 'GET /users', 'GET /users/{id}', 'POST /users/{id}/quarantine', 'POST /users/{id}/restore', 'GET /database/tables', 'GET /database/tables/{table}', 'POST /database/query', 'GET /diagnostics?site_health=1', 'GET /diagnostics/cron', 'GET /diagnostics/logs?source=debug|php&lines=200&search=', 'POST /maintenance' ),
 			'site_uuid' => AISM_Migration::site_uuid(),
-			'stores' => array( 'posts, postmeta' => '/wp/posts, /wp/pages, /wp/media and other discovered post types; REST-registered meta in the meta field', 'terms, term_taxonomy, term_relationships, termmeta' => 'Discovered taxonomy resources; assign terms through post fields', 'comments, commentmeta' => '/wp/comments', 'options' => '/settings/{option}; explicit per-key allowlist', 'users, usermeta' => '/users (review: roles, sessions, application passwords; never password hashes or tokens) and reversible quarantine' ),
-			'limits' => array( 'max_per_page' => 100, 'settings_body_bytes' => 262144, 'raw_sql' => false, 'native_wordpress_permissions' => true, 'key_authentication_outside_this_namespace' => false ),
+			'stores' => array( 'posts, postmeta' => '/wp/posts, /wp/pages, /wp/media and other discovered post types; REST-registered meta in the meta field', 'terms, term_taxonomy, term_relationships, termmeta' => 'Discovered taxonomy resources; assign terms through post fields', 'comments, commentmeta' => '/wp/comments', 'options' => '/settings/{option}; explicit per-key allowlist', 'users, usermeta' => '/users (review: roles, sessions, application passwords; never password hashes or tokens) and reversible quarantine', 'any table' => 'database:read: /database/tables and read-only /database/query (users, usermeta and API keys excluded)', 'cron, logs, environment' => 'diagnostics:read: /diagnostics, /diagnostics/cron, /diagnostics/logs; maintenance:write: POST /maintenance' ),
+			'limits' => array( 'max_per_page' => 100, 'settings_body_bytes' => 262144, 'raw_sql' => in_array( 'database:read', $key['scopes'], true ) ? 'read-only' : false, 'native_wordpress_permissions' => true, 'key_authentication_outside_this_namespace' => false ),
 		);
 	}
 

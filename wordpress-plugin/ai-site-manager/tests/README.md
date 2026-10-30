@@ -18,6 +18,7 @@ docker exec --user 33:33 aism-test-wordpress-1 php /var/www/html/wp-content/plug
 docker exec --user 33:33 aism-test-wordpress-1 php /var/www/html/wp-content/plugins/ai-site-manager/tests/plugin-restrictions.php /var/www/html/wp-load.php filemods
 docker exec --user 33:33 aism-test-wordpress-1 php /var/www/html/wp-content/plugins/ai-site-manager/tests/migration.php /var/www/html/wp-load.php
 docker exec --user 33:33 aism-test-wordpress-1 php /var/www/html/wp-content/plugins/ai-site-manager/tests/users.php /var/www/html/wp-load.php
+docker exec --user 33:33 aism-test-wordpress-1 php /var/www/html/wp-content/plugins/ai-site-manager/tests/admin-tools.php /var/www/html/wp-load.php
 uv run --system-certs ai-site-manager/tests/http-integration.py http://127.0.0.1:PORT aism-test-wordpress-1
 # After HTTP tests: verifies audit cleanup and uninstall, then recreates empty API tables.
 docker exec aism-test-wordpress-1 php /var/www/html/wp-content/plugins/ai-site-manager/tests/lifecycle.php /var/www/html/wp-load.php
@@ -74,3 +75,7 @@ Additional host/cloud upload limits and third-party plugin update providers depe
 The restriction suite verifies `DISALLOW_FILE_MODS` and the multisite mutation guard in separate processes. The multisite mode runs after converting the disposable site to a network and also verifies that theme listing still works. Run CLI theme tests as the web user (33:33) so WordPress filesystem ownership checks match HTTP requests.
 
 To run only HTTP key management checks, pass `--keys-only` after the base URL and container name to `http-integration.py`. The PHP integration suite also checks live grants/removals, unchanged key identity and expiry, invalid updates, and expired/revoked key rejection.
+
+## Database, diagnostics and maintenance
+
+`admin-tools.php` covers the three permissions and the manage_options requirement; table listing and descriptions; read-only queries with row, value-size, UTF-8, binary and time limits; rejection of writes, comments, multiple statements, locking, side-effect functions, variable assignment, backslashes and administrative SHOW statements; protection of the users, user meta and API key tables (bare, backticked, double-quoted, upper-case, joined, subquery and schema-qualified), other databases and system schemas; that rejected queries change nothing; that the session time limit is restored and autocommit resumes; redaction; audit details; the diagnostics overview, Site Health, cron listing and log tail/search; and that only scheduled events run, as WP-Cron would run them. To exercise the other-database check, first let the test user read a second database as root: `docker exec aism-test-db-1 mariadb -uroot -pisolated-root-password -e "CREATE DATABASE aism_other_site; CREATE TABLE aism_other_site.anything (id int); GRANT SELECT ON aism_other_site.* TO 'wordpress'@'%';"`.

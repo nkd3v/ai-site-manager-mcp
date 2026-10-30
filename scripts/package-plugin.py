@@ -13,6 +13,8 @@ FILES = [
     'includes/class-admin.php', 'includes/class-api.php', 'includes/class-migration.php',
     'includes/class-plugins.php', 'includes/class-themes.php', 'includes/class-store.php', 'includes/class-updater.php',
     'includes/class-users.php',
+    'includes/class-database.php',
+    'includes/class-diagnostics.php',
 ]
 
 

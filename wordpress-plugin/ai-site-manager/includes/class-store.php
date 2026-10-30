@@ -36,6 +36,7 @@ final class AISM_Store {
 			method varchar(10) NOT NULL,
 			route varchar(255) NOT NULL,
 			status smallint unsigned NOT NULL,
+			detail varchar(1000) NOT NULL DEFAULT '',
 			created_at datetime NOT NULL,
 			PRIMARY KEY  (id),
 			KEY created_at (created_at)
@@ -64,7 +65,7 @@ final class AISM_Store {
 		foreach ( array( 'content', 'media', 'taxonomies', 'comments', 'plugins', 'themes', 'migration' ) as $group ) {
 			foreach ( array( 'read', 'write', 'delete' ) as $action ) { $result[] = "$group:$action"; }
 		}
-		return array_merge( $result, array( 'settings:read', 'settings:write', 'users:read', 'users:write' ) );
+		return array_merge( $result, array( 'settings:read', 'settings:write', 'users:read', 'users:write', 'database:read', 'diagnostics:read', 'maintenance:write' ) );
 	}
 
 	public static function default_options() {
@@ -148,11 +149,20 @@ final class AISM_Store {
 		return $wpdb->update( self::table( 'keys' ), array( 'revoked_at' => gmdate( 'Y-m-d H:i:s' ) ), array( 'id' => $id ), array( '%s' ), array( '%d' ) );
 	}
 
+	private static $detail = '';
+
+	/** Attach a short description (such as the SQL text) to the current request's audit record. */
+	public static function note( $detail ) {
+		self::$detail = function_exists( 'mb_strcut' ) ? mb_strcut( (string) $detail, 0, 1000, 'UTF-8' ) : substr( (string) $detail, 0, 1000 );
+	}
+
 	public static function audit( $key, $request, $status ) {
 		global $wpdb;
 		$now = gmdate( 'Y-m-d H:i:s' );
+		$detail = self::$detail;
+		self::$detail = '';
 		$wpdb->update( self::table( 'keys' ), array( 'last_used_at' => $now ), array( 'id' => $key['id'] ) );
-		$wpdb->insert( self::table( 'audit' ), array( 'key_id' => $key['id'], 'user_id' => $key['user_id'], 'method' => $request->get_method(), 'route' => substr( $request->get_route(), 0, 255 ), 'status' => $status, 'created_at' => $now ) );
+		$wpdb->insert( self::table( 'audit' ), array( 'key_id' => $key['id'], 'user_id' => $key['user_id'], 'method' => $request->get_method(), 'route' => substr( $request->get_route(), 0, 255 ), 'status' => $status, 'detail' => $detail, 'created_at' => $now ) );
 	}
 
 	public static function cleanup() {

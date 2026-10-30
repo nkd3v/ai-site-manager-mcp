@@ -3,7 +3,7 @@ Contributors: site-owner
 Tags: rest-api, ai, api-key, content, configuration
 Requires at least: 6.6
 Requires PHP: 7.4
-Stable tag: 1.5.0
+Stable tag: 1.6.0
 License: GPLv2 or later
 
 Scoped API keys for AI-assisted WordPress content, media uploads, approved settings, plugin/theme management, site migration, and user account review and quarantine.
@@ -23,6 +23,7 @@ Scoped API keys for AI-assisted WordPress content, media uploads, approved setti
 * List, install, upload ZIPs, activate, update and delete themes on single-site WordPress, with active/parent theme protection.
 * Migrate between WordPress sites: content of every post type, original media files, menus, templates, comments, settings, widgets and plugin/theme packages, with ID remapping, URL rewriting, incremental re-sync and rollback.
 * Review user accounts (roles, login sessions, application passwords) and quarantine a suspicious account: remove its roles, end its sessions, delete its application passwords, randomize its password and block every login path until restored.
+* Optional read-only database access (every table except accounts, sessions and API keys), diagnostics (environment, plugins, Site Health, cron schedule, error logs) and maintenance (run scheduled events, flush caches and permalinks, remove expired transients).
 * Authenticated live discovery, native resource schemas, and an AI usage guide.
 * Updates itself from GitHub releases through Dashboard > Updates, with SHA-256 verification and optional WordPress auto-updates.
 * Metadata-only API audit log with 30-day WP-Cron retention.
@@ -31,6 +32,8 @@ Scoped API keys for AI-assisted WordPress content, media uploads, approved setti
 See README.md for operational details and docs/AI-GUIDE.md for the full API guide.
 
 == Changelog ==
+= 1.6.0 =
+Add three optional permissions for administrator keys, never selected by default. database:read lists and describes tables and runs read-only SQL (SELECT, WITH, TABLE, SHOW, DESCRIBE, EXPLAIN) in a read-only transaction with time and row limits; comments, writes, locking, side-effect functions, other databases and the users, user meta and API key tables are refused, and secret-looking values are redacted. diagnostics:read reports environment, configuration, plugin versions, Site Health results, the WP-Cron schedule and the end of the debug or PHP error log. maintenance:write runs an already-scheduled cron event now, flushes the object cache and permalinks, and removes expired transients. The activity log now records the SQL of database queries and the maintenance action.
 = 1.5.0 =
 Add user account review and reversible quarantine for incident response. New users:read and users:write scopes (never selected by default); GET /users and /users/{id} show roles, login sessions and application password names without secrets; POST /users/{id}/quarantine saves and removes roles, ends sessions, deletes application passwords, randomizes the password and blocks logins and password resets; POST /users/{id}/restore and Users > Lift quarantine restore the roles. Refuses the key owner and the last active administrator.
 = 1.4.1 =
