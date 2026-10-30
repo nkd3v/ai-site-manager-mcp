@@ -3,7 +3,7 @@ import * as z from 'zod/v4';
 import { SiteRegistry } from './sites.js';
 import * as migration from './migration.js';
 
-export const VERSION = '1.6.1';
+export const VERSION = '1.6.2';
 const resource = z.string().regex(/^[a-zA-Z0-9_-]+$/).refine(v => !['users', 'plugins', 'themes', 'settings', 'batch', 'application-passwords'].includes(v), 'Use a resource returned by discovery.');
 const id = z.number().int().positive();
 const scalar = z.union([z.string(), z.number(), z.boolean()]);
@@ -122,7 +122,7 @@ export function createServer(connection) {
     ...pair, type: z.enum(['plugin', 'theme']), id: z.string().min(1).max(255).describe('Plugin identifier (folder/file.php or slug) or theme stylesheet from aism_migration_plan.'),
     from: z.enum(['source', 'wordpress.org']).default('source'), activate: z.boolean().default(false),
   }, runPair(migration.transferPackage), false, true);
-  register('aism_migration_run', 'Migrate a whole site in resumable steps: terms, media (original files), all content types including menus, templates, global styles and patterns, comments, site settings (front page, permalinks, widgets, customizer), then a finalize pass that remaps IDs and rewrites source URLs to the target. Returns within max_seconds; call again with the returned cursor until done is true. Re-running updates already migrated objects instead of duplicating them, so it also works as an incremental sync (with modified_after). Overwrites target settings and previously migrated objects. Users are not created; authors are matched by login/email.', {
+  register('aism_migration_run', 'Migrate a whole site in resumable steps: terms, site settings (front page, permalinks, media sizes, widgets, customizer), media (original files), all content types including menus, templates, global styles and patterns, comments, then a finalize pass that remaps IDs and rewrites source URLs to the target. Returns within max_seconds; call again with the returned cursor until done is true. Re-running updates already migrated objects instead of duplicating them, so it also works as an incremental sync (with modified_after). Overwrites target settings and previously migrated objects. Users are not created; authors are matched by login/email.', {
     ...pair, cursor: z.record(z.string(), z.json()).optional().describe('cursor from the previous call; omit to start.'),
     phases: z.array(z.enum(migration.PHASES)).optional().describe('Subset of phases (finalize always runs). Default: all.'),
     post_types: z.array(z.string().regex(/^[a-z0-9_-]+$/)).optional().describe('Only these post types (include attachment for media). Default: all.'),

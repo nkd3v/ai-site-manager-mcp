@@ -31,6 +31,12 @@ final class AISM_Migration {
 		'medium_large_size_w', 'medium_large_size_h', 'large_size_w', 'large_size_h', 'uploads_use_yearmonth_folders', 'image_default_link_type',
 		'image_default_size', 'image_default_align', 'site_icon', 'use_smilies', 'nav_menu_options', 'sidebars_widgets',
 	);
+	/** Shortcode attributes that hold post or attachment IDs in any shortcode (core media and page-builder images). Filter: aism_migration_shortcode_id_attributes. */
+	const SHORTCODE_ID_ATTRS = array( 'ids', 'image', 'images', 'img', 'bg', 'bg_image', 'background_image', 'image_id', 'attachment_id', 'attach_id', 'thumbnail_id', 'icon_img', 'photo', 'poster' );
+	/** Shortcodes whose numeric id attribute is a post ID: forms, reusable blocks, products and page-builder images. Filter: aism_migration_shortcode_id_tags. */
+	const SHORTCODE_ID_TAGS = array( 'contact-form-7', 'contact-form', 'wpforms', 'block', 'ux_image', 'product', 'product_page', 'add_to_cart', 'add_to_cart_url', 'elementor-template', 'fl_builder_insert_layout', 'templatera' );
+	/** Theme mod names that hold an attachment ID, for example Flatsome's site_logo and site_logo_dark. */
+	const THEME_MOD_ATTACHMENT_KEY = '/(?:^|_)(?:logo|image|img|icon|favicon|bg|background|banner|photo)(?:_(?:id|dark|light|mobile|sticky|retina|white|alt|\d+))*$/D';
 	const BLOCK_REGEX = '/<!--\s+(?P<closer>\/)?wp:(?P<namespace>[a-z][a-z0-9_-]*\/)?(?P<name>[a-z][a-z0-9_-]*)\s+(?P<attrs>{(?:(?:[^}]+|}+(?=})|(?!}\s+\/?-->).)*+)?}\s+)?(?P<void>\/)?-->/s';
 
 	private static $map_cache = array();
@@ -777,18 +783,46 @@ final class AISM_Migration {
 			$uploads['url'] = $uploads['baseurl'] . $uploads['subdir'];
 			return $uploads;
 		};
-		add_filter( 'upload_dir', $dirs );
-		try { $upload = wp_handle_upload( array_merge( $file, array( 'name' => $name ) ), array( 'test_form' => false ) ); }
-		finally { remove_filter( 'upload_dir', $dirs ); }
-		if ( isset( $upload['error'] ) ) { return self::error( 'aism_upload_rejected', $upload['error'] ); }
+		$adopted = self::reusable_file( $subdir, $name, $file['tmp_name'] );
+		if ( $adopted ) {
+			$upload = $adopted;
+		} else {
+			add_filter( 'upload_dir', $dirs );
+			try { $upload = wp_handle_upload( array_merge( $file, array( 'name' => $name ) ), array( 'test_form' => false ) ); }
+			finally { remove_filter( 'upload_dir', $dirs ); }
+			if ( isset( $upload['error'] ) ) { return self::error( 'aism_upload_rejected', $upload['error'] ); }
+		}
 		$fields = self::post_fields( $source, $item, 'attachment', $ctx );
 		unset( $fields['post_name'] );
 		$fields = array_merge( $fields, array( 'post_status' => 'inherit', 'post_mime_type' => $upload['type'], 'guid' => $upload['url'], 'meta_input' => array( '_aism_source' => $source . ':' . (int) $item['id'] ) ) );
 		$id = wp_insert_attachment( wp_slash( $fields ), $upload['file'], $fields['post_parent'], true );
-		if ( is_wp_error( $id ) ) { wp_delete_file( $upload['file'] ); return $id; }
+		if ( is_wp_error( $id ) ) { if ( ! $adopted ) { wp_delete_file( $upload['file'] ); } return $id; }
+		// Rollback keeps an adopted file: it was on the target before the migration.
+		if ( $adopted ) { update_post_meta( $id, '_aism_adopted_file', $adopted['relative'] ); }
 		wp_update_attachment_metadata( $id, wp_generate_attachment_metadata( $id, $upload['file'] ) );
 		$urls = self::url_pairs( $source, isset( $item['attachment']['urls'] ) && is_array( $item['attachment']['urls'] ) ? $item['attachment']['urls'] : array(), self::attachment_urls( $id ) );
 		return self::after_post_write( $source, $id, $item, 'attachment', 'created', $ctx, array( 'urls' => $urls ) );
+	}
+
+	/**
+	 * An identical file already at the source's path (for example uploads copied to the server before migrating) is
+	 * reused instead of saved again under a "-1" name, so file URLs stay unchanged. Files owned by another attachment,
+	 * different bytes or a disallowed type fall back to a normal upload.
+	 */
+	private static function reusable_file( $subdir, $name, $tmp ) {
+		global $wpdb;
+		$uploads = wp_get_upload_dir();
+		$relative = ltrim( ( '' === $subdir ? '' : $subdir . '/' ) . $name, '/' );
+		$path = wp_normalize_path( trailingslashit( $uploads['basedir'] ) . $relative );
+		$real = realpath( $path );
+		$base = realpath( $uploads['basedir'] );
+		if ( '' === $name || ! $real || ! $base || 0 !== strpos( wp_normalize_path( $real ), trailingslashit( wp_normalize_path( $base ) ) ) || is_link( $path ) || ! is_file( $real ) ) { return null; }
+		if ( ! is_readable( $tmp ) || filesize( $real ) !== filesize( $tmp ) || ! hash_equals( hash_file( 'sha256', $real ), hash_file( 'sha256', $tmp ) ) ) { return null; }
+		$check = wp_check_filetype_and_ext( $real, $name );
+		if ( empty( $check['type'] ) ) { return null; }
+		$owner = $wpdb->get_var( $wpdb->prepare( "SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = '_wp_attached_file' AND meta_value = %s LIMIT 1", $relative ) );
+		if ( $owner ) { return null; }
+		return array( 'file' => $path, 'url' => trailingslashit( $uploads['baseurl'] ) . $relative, 'type' => $check['type'], 'relative' => $relative );
 	}
 
 	/** Explicit source→target file URL pairs where the relative upload path changed. */
@@ -883,10 +917,33 @@ final class AISM_Migration {
 		}
 		$one = function ( $id, $kind = 'post' ) use ( $map ) { $new = $map( $kind, (int) $id ); return $new ? (string) $new : (string) $id; };
 		$content = preg_replace_callback( '/\bwp-image-(\d+)\b/', function ( $m ) use ( $one ) { return 'wp-image-' . $one( $m[1] ); }, $content );
-		$content = preg_replace_callback( '/(\[(?:gallery|playlist)\b[^\]]*?\bids=["\']?)([\d,\s]+)/', function ( $m ) use ( $one ) {
-			return $m[1] . implode( ',', array_map( $one, array_filter( array_map( 'trim', explode( ',', $m[2] ) ), 'strlen' ) ) );
-		}, $content );
+		if ( false !== strpos( $content, '[' ) ) { $content = self::shortcode_refs( $content, $one ); }
 		return preg_replace_callback( '/(\[caption\b[^\]]*?\bid=["\']?attachment_)(\d+)/', function ( $m ) use ( $one ) { return $m[1] . $one( $m[2] ); }, $content );
+	}
+
+	/**
+	 * Remap numeric post/attachment IDs in shortcode attributes: core [gallery]/[playlist] ids, page-builder images
+	 * (for example Flatsome [ux_image id], [ux_banner bg], [featured_box img], [ux_gallery ids]) and form or block
+	 * embeds such as [contact-form-7 id]. Each attribute is mapped once; unmapped IDs are left unchanged.
+	 */
+	private static function shortcode_refs( $content, $one ) {
+		$attrs = (array) apply_filters( 'aism_migration_shortcode_id_attributes', self::SHORTCODE_ID_ATTRS );
+		$id_tags = (array) apply_filters( 'aism_migration_shortcode_id_tags', self::SHORTCODE_ID_TAGS );
+		return preg_replace_callback( '/\[(?!\/)([A-Za-z][A-Za-z0-9_-]*)(\s[^\[\]]*)?\]/', function ( $tag ) use ( $one, $attrs, $id_tags ) {
+			if ( empty( $tag[2] ) ) { return $tag[0]; }
+			$name = strtolower( $tag[1] );
+			$fields = in_array( $name, $id_tags, true ) ? array_merge( $attrs, array( 'id' ) ) : $attrs;
+			$body = preg_replace_callback( '/(\s)([A-Za-z0-9_-]+)(\s*=\s*)(?:"(\d[\d,\s]*)"|\'(\d[\d,\s]*)\'|(\d+(?:,\d+)*)(?=[\s\/]|$))/', function ( $m ) use ( $one, $fields ) {
+				if ( ! in_array( strtolower( $m[2] ), $fields, true ) ) { return $m[0]; }
+				$quote = isset( $m[4] ) && '' !== $m[4] ? '"' : ( isset( $m[5] ) && '' !== $m[5] ? "'" : '' );
+				$value = '"' === $quote ? $m[4] : ( "'" === $quote ? $m[5] : $m[6] );
+				$ids = array_values( array_filter( array_map( 'trim', explode( ',', $value ) ), 'strlen' ) );
+				$mapped = array_map( $one, $ids );
+				// Keep the original spelling (spaces, quotes) when nothing was remapped.
+				return $mapped === $ids ? $m[0] : $m[1] . $m[2] . $m[3] . $quote . implode( ',', $mapped ) . $quote;
+			}, $tag[2] );
+			return '[' . $tag[1] . $body . ']';
+		}, $content );
 	}
 
 	private static function block_refs( $name, &$attrs, $map ) {
@@ -988,6 +1045,8 @@ final class AISM_Migration {
 		foreach ( $rows as $row ) {
 			$missing = array();
 			$map = function ( $kind, $id ) use ( $source, &$missing ) {
+				// Empty references (for example an empty _thumbnail_id) are not unresolved objects.
+				if ( (int) $id <= 0 ) { return null; }
 				$target = self::lookup( $source, 'term' === $kind ? 'term' : 'post', $id );
 				if ( ! $target ) { $missing[] = $kind . ':' . $id; }
 				return $target ? $target : null;
@@ -1086,6 +1145,7 @@ final class AISM_Migration {
 				foreach ( array( 'custom_logo', 'custom_css_post_id' ) as $field ) { if ( isset( $value[ $field ] ) ) { $value[ $field ] = $post( $value[ $field ] ); } }
 				if ( isset( $value['nav_menu_locations'] ) && is_array( $value['nav_menu_locations'] ) ) { $value['nav_menu_locations'] = array_map( $term, $value['nav_menu_locations'] ); }
 				if ( isset( $value['header_image_data'] ) && is_array( $value['header_image_data'] ) && isset( $value['header_image_data']['attachment_id'] ) ) { $value['header_image_data']['attachment_id'] = $post( $value['header_image_data']['attachment_id'] ); }
+				$value = self::theme_mod_attachments( $value, $map );
 			} elseif ( 0 === strpos( $name, 'widget_' ) && is_array( $value ) ) {
 				foreach ( $value as $k => $instance ) {
 					if ( ! is_array( $instance ) ) { continue; }
@@ -1100,7 +1160,33 @@ final class AISM_Migration {
 		}
 	}
 
+	/**
+	 * Remap theme-specific image settings that store an attachment ID (Flatsome site_logo, site_logo_dark and similar).
+	 * Only numeric values under image-like names are touched; an ID that maps to a non-attachment is left alone, and an
+	 * unmigrated image is cleared rather than left pointing at an unrelated target attachment.
+	 */
+	private static function theme_mod_attachments( $mods, $map ) {
+		foreach ( $mods as $field => $mod ) {
+			if ( ! is_string( $field ) || in_array( $field, array( 'custom_logo', 'custom_css_post_id' ), true ) || ! preg_match( self::THEME_MOD_ATTACHMENT_KEY, $field ) ) { continue; }
+			if ( ! ( is_int( $mod ) || ( is_string( $mod ) && ctype_digit( $mod ) ) ) || (int) $mod <= 0 ) { continue; }
+			$new = (int) $map( 'post', (int) $mod );
+			if ( $new && 'attachment' !== get_post_type( $new ) ) { continue; }
+			$mods[ $field ] = is_int( $mod ) ? $new : ( $new ? (string) $new : '' );
+		}
+		return $mods;
+	}
+
 	/* ---------- Target: rollback ---------- */
+
+	/** Delete a migrated attachment and its generated sizes, keeping an original file that existed before the import. */
+	private static function delete_attachment( $id ) {
+		$adopted = (string) get_post_meta( $id, '_aism_adopted_file', true );
+		$keep = '' === $adopted ? false : realpath( trailingslashit( wp_get_upload_dir()['basedir'] ) . $adopted );
+		$guard = function ( $file ) use ( $keep ) { return $keep && realpath( $file ) === $keep ? '' : $file; };
+		if ( $keep ) { add_filter( 'wp_delete_file', $guard ); }
+		try { return wp_delete_attachment( $id, true ); }
+		finally { if ( $keep ) { remove_filter( 'wp_delete_file', $guard ); } }
+	}
 
 	private static function rollback( $request ) {
 		global $wpdb;
@@ -1127,7 +1213,7 @@ final class AISM_Migration {
 			} elseif ( $row['created'] ) {
 				// Delete only objects this migration created, confirmed by their source marker.
 				if ( 'post' === $row['object_type'] && get_post_meta( $target, '_aism_source', true ) === $marker ) {
-					$ok = 'attachment' === get_post_type( $target ) ? wp_delete_attachment( $target, true ) : wp_delete_post( $target, true );
+					$ok = 'attachment' === get_post_type( $target ) ? self::delete_attachment( $target ) : wp_delete_post( $target, true );
 					if ( $ok ) { ++$deleted; } else { $errors[] = array( 'object_type' => 'post', 'target_id' => $target ); }
 				} elseif ( 'term' === $row['object_type'] && get_term_meta( $target, '_aism_source', true ) === $marker ) {
 					$term = get_term( $target );

@@ -3,7 +3,7 @@ Contributors: site-owner
 Tags: rest-api, ai, api-key, content, configuration
 Requires at least: 6.6
 Requires PHP: 7.4
-Stable tag: 1.6.1
+Stable tag: 1.6.2
 License: GPLv2 or later
 
 Scoped API keys for AI-assisted WordPress content, media uploads, approved settings, plugin/theme management, site migration, and user account review and quarantine.
@@ -32,6 +32,8 @@ Scoped API keys for AI-assisted WordPress content, media uploads, approved setti
 See README.md for operational details and docs/AI-GUIDE.md for the full API guide.
 
 == Changelog ==
+= 1.6.2 =
+Fix site migrations from page-builder themes such as Flatsome. Finalize now remaps attachment and post IDs in shortcode attributes (for example [ux_image id], [ux_banner bg], [featured_box img], [ux_gallery ids] and [contact-form-7 id]) and in theme image settings such as site_logo, which previously kept the source IDs and showed missing or wrong images. An identical file already at the source path on the target is reused instead of saved under a "-1" name, and rollback keeps it. Empty references are no longer reported as unresolved. The MCP adapter imports site settings before media so images are generated with the source's sizes.
 = 1.6.1 =
 Fix read-only database queries hanging on hosts with many databases on the same server, such as Wasmer: the check for references to other databases now looks up only the names used in the query instead of listing every database.
 = 1.6.0 =

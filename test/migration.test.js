@@ -106,7 +106,7 @@ test('run migrates every phase in order, transfers original media files and fini
   assert.equal(result.stats.files, 1);
   assert.ok(result.warnings.some(w => /non-portable/.test(w)));
   const imports = log.filter(r => r.site === 'new' && r.route === '/migration/import').map(r => r.body.kind + ':' + r.body.items.map(i => i.type ?? i.taxonomy ?? 'site').join(','));
-  assert.deepEqual(imports, ['terms:category', 'posts:attachment', 'posts:post', 'posts:post', 'posts:nav_menu_item', 'site:site']);
+  assert.deepEqual(imports, ['terms:category', 'site:site', 'posts:attachment', 'posts:post', 'posts:post', 'posts:nav_menu_item']);
   const begin = log.find(r => r.route === '/migration/begin');
   assert.deepEqual(Object.keys(begin.body.source).sort(), ['home', 'name', 'site_uuid', 'siteurl', 'uploads_baseurl']);
   const upload = log.find(r => r.route === '/migration/import-file');

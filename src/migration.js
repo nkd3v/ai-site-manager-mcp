@@ -1,6 +1,7 @@
 import { ApiError } from './api.js';
 
-export const PHASES = ['terms', 'media', 'content', 'comments', 'site', 'finalize'];
+// Site settings come before media so the source's image sizes apply when media sizes are generated.
+export const PHASES = ['terms', 'site', 'media', 'content', 'comments', 'finalize'];
 const MAX_ERRORS = 50;
 
 const strip = url => String(url ?? '').replace(/\/+$/, '');

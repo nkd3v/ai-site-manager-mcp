@@ -146,13 +146,23 @@ $comments = $import( 'comments', array(
 	array( 'id' => 72, 'post' => 9999, 'content' => 'orphan' ),
 ) )->get_data();
 check( 2 === count( $comments['results'] ) && 'aism_comment_post_missing' === $comments['errors'][0]['code'], 'Comment import wrong' );
+// Page-builder shortcodes and theme image settings reference attachments by ID. Source attachment 62 is found
+// through its marker, as after an interrupted write.
+$png = base64_decode( 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' );
+$logo_upload = wp_upload_bits( 'aism-logo-' . $slug . '.png', null, $png );
+check( empty( $logo_upload['error'] ), 'Fixture upload failed' );
+$logo = wp_insert_attachment( array( 'post_title' => 'Logo', 'post_mime_type' => 'image/png', 'post_status' => 'inherit', 'meta_input' => array( '_aism_source' => $source . ':62' ) ), $logo_upload['file'] );
+$builder = $import( 'posts', array( array( 'id' => 63, 'type' => 'page', 'status' => 'publish', 'slug' => $slug . '-builder', 'title' => 'Builder',
+	'content' => '[ux_image id="62"][ux_banner bg="62" bg_color="#fff"][featured_box img=\'62\']x[/featured_box][ux_gallery ids="62, 50"][contact-form-7 id="50" title="Form"][gallery ids="62,999"][other id="62"][section bg="#123"][ux_image_box img=62][caption id="attachment_62"]c[/caption]' ) ) )->get_data();
+check( 'created' === $builder['results'][0]['action'], 'Builder page import failed' );
 // Site settings with ID references; a previously missing option must be deleted again on rollback.
 $front_before = get_option( 'page_on_front' );
 delete_option( 'widget_nav_menu' );
 $site_result = $import( 'site', array( array( 'id' => 1, 'stylesheet' => get_stylesheet(), 'options' => array(
 	'page_on_front' => 51, 'show_on_front' => 'page', 'default_category' => 900, 'siteurl' => 'https://evil.example', 'active_plugins' => array( 'x/x.php' ), 'aism_site_uuid' => 'x',
 	'widget_nav_menu' => array( 3 => array( 'nav_menu' => 904, 'title' => 'Menu' ), '_multiwidget' => 1 ),
-	'theme_mods_' . get_stylesheet() => array( 'nav_menu_locations' => array( 'primary' => 904 ), 'custom_logo' => 60, 'header_textcolor' => 'fff', 'background_image' => $old . '/wp-content/uploads/bg.jpg' ),
+	'theme_mods_' . get_stylesheet() => array( 'nav_menu_locations' => array( 'primary' => 904 ), 'custom_logo' => 60, 'header_textcolor' => 'fff', 'background_image' => $old . '/wp-content/uploads/bg.jpg',
+		'site_logo' => 62, 'site_logo_dark' => '60', 'logo_width' => 62, 'header_bg_img' => '51' ),
 ) ) ) )->get_data();
 check( array( 'siteurl', 'active_plugins', 'aism_site_uuid' ) === $site_result['results'][0]['skipped_options'] && home_url() !== 'https://evil.example', 'Protected options imported: ' . wp_json_encode( $site_result ) );
 // Finalize remaps IDs and rewrites URLs exactly once.
@@ -174,6 +184,11 @@ check( (int) get_post_meta( $t( 55 ), '_menu_item_object_id', true ) === $t( 51 
 check( (int) get_option( 'page_on_front' ) === $t( 51 ) && (int) get_option( 'default_category' ) === $t( 900, 'term' ), 'ID options not remapped' );
 $mods = get_option( 'theme_mods_' . get_stylesheet() );
 check( $t( 904, 'term' ) === $mods['nav_menu_locations']['primary'] && 0 === $mods['custom_logo'] && 'fff' === $mods['header_textcolor'] && home_url() . '/wp-content/uploads/bg.jpg' === $mods['background_image'], 'Theme mods wrong: ' . wp_json_encode( $mods ) );
+// Theme image IDs: mapped attachments are remapped, unmigrated images cleared, non-image names and non-attachments kept.
+check( $logo === $mods['site_logo'] && '' === $mods['site_logo_dark'] && 62 === $mods['logo_width'] && '51' === $mods['header_bg_img'], 'Theme image mods wrong: ' . wp_json_encode( $mods ) );
+$built = get_post( $t( 63 ) )->post_content;
+$expect = '[ux_image id="' . $logo . '"][ux_banner bg="' . $logo . '" bg_color="#fff"][featured_box img=\'' . $logo . '\']x[/featured_box][ux_gallery ids="' . $logo . ',' . $t( 50 ) . '"][contact-form-7 id="' . $t( 50 ) . '" title="Form"][gallery ids="' . $logo . ',999"][other id="62"][section bg="#123"][ux_image_box img=' . $logo . '][caption id="attachment_' . $logo . '"]c[/caption]';
+check( $expect === $built, 'Shortcode IDs not remapped exactly once: ' . $built );
 check( $t( 904, 'term' ) === get_option( 'widget_nav_menu' )[3]['nav_menu'], 'Widget menu not remapped' );
 check( ! empty( $final['unresolved_count'] ) || isset( $final['unresolved'] ), 'Unresolved references not reported' );
 $status = call_api( 'GET', '/migration/status', $read, null, array( 'source' => $source ) )->get_data();
@@ -186,6 +201,7 @@ $matched = $t( 903, 'term' );
 $created_ids = array( $t( 50 ), $t( 51 ), $t( 55 ) );
 do { $rolled = call_api( 'POST', '/migration/rollback', $full, array( 'source' => $source, 'limit' => 3 ) )->get_data(); } while ( $rolled['remaining'] > 0 );
 check( ! get_post( $created_ids[0] ) && ! get_post( $created_ids[1] ) && ! get_post( $created_ids[2] ) && ! get_term_by( 'slug', $slug . '-parent', 'category' ), 'Created objects survived rollback' );
+check( ! get_post( $logo ) && ! file_exists( $logo_upload['file'] ), 'Marker-adopted attachment or its file survived rollback' );
 // Pre-existing matched objects stay; an interrupted write carries the marker, so it was created by the migration.
 check( get_term( $matched ) && ! is_wp_error( get_term( $matched ) ) && ! get_post( $orphan ), 'Matched or marker-adopted object handling wrong' );
 check( $front_before == get_option( 'page_on_front' ) && false === get_option( 'widget_nav_menu' ), 'Options not restored' );
@@ -200,6 +216,31 @@ $tpl = call_api( 'POST', '/migration/import', $full, array( 'source' => $source2
 check( 'matched' === $tpl['results'][0]['action'] && $part === $tpl['results'][0]['target_id'] && 'new' === get_post( $part )->post_content, 'Template part not matched by slug and theme' );
 do { $rolled = call_api( 'POST', '/migration/rollback', $full, array( 'source' => $source2 ) )->get_data(); } while ( $rolled['remaining'] > 0 );
 check( (bool) get_post( $part ), 'Rollback deleted a matched template part' );
+// An identical file already at the source path is reused (no "-1" copy) unless another attachment owns it or the bytes differ.
+$reuse = new ReflectionMethod( 'AISM_Migration', 'reusable_file' );
+$reuse->setAccessible( true );
+$sub = '2001/01';
+$existing = wp_upload_bits( 'aism-reuse-' . $slug . '.png', null, $png, $sub );
+$name = wp_basename( $existing['file'] );
+$tmp = wp_tempnam( 'aism-reuse' );
+file_put_contents( $tmp, $png );
+$found = $reuse->invoke( null, $sub, $name, $tmp );
+check( is_array( $found ) && $sub . '/' . $name === $found['relative'] && wp_normalize_path( $existing['file'] ) === $found['file'] && 'image/png' === $found['type'], 'Identical existing file not reused: ' . wp_json_encode( $found ) );
+file_put_contents( $tmp, $png . 'x' );
+check( null === $reuse->invoke( null, $sub, $name, $tmp ), 'Different bytes reused' );
+check( null === $reuse->invoke( null, $sub, '../../../wp-config.php', $tmp ) && null === $reuse->invoke( null, $sub, 'aism-missing.png', $tmp ), 'Traversal or missing file reused' );
+file_put_contents( $tmp, $png );
+$owner = wp_insert_attachment( array( 'post_title' => 'Owner', 'post_mime_type' => 'image/png', 'post_status' => 'inherit' ), $existing['file'] );
+check( null === $reuse->invoke( null, $sub, $name, $tmp ), 'File owned by another attachment reused' );
+// Rollback keeps an adopted original but still removes the attachment.
+delete_post_meta( $owner, '_wp_attached_file' );
+update_post_meta( $owner, '_wp_attached_file', $sub . '/' . $name );
+update_post_meta( $owner, '_aism_adopted_file', $sub . '/' . $name );
+$delete = new ReflectionMethod( 'AISM_Migration', 'delete_attachment' );
+$delete->setAccessible( true );
+check( $delete->invoke( null, $owner ) && ! get_post( $owner ) && file_exists( $existing['file'] ), 'Adopted file deleted on rollback' );
+wp_delete_file( $tmp );
+wp_delete_file( $existing['file'] );
 // Cleanup.
 foreach ( array( $src_post, $orphan, $part, $t( 54 ), $t( 61 ) ) as $id ) { if ( $id ) { wp_delete_post( $id, true ); } }
 wp_delete_user( $editor_id );
