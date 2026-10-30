@@ -102,6 +102,7 @@ function context(source, target, cursor, deadline) {
       cursor.stats.errors++;
       if (report.errors.length < MAX_ERRORS) report.errors.push({ kind, ...error });
     }
+    for (const warning of data.warnings ?? []) if (report.warnings.length < MAX_ERRORS) report.warnings.push(warning);
     Object.assign(report.authors, data.authors ?? {});
     for (const key of data.skipped_meta_keys ?? []) report.skipped_meta_keys.add(key);
   };
@@ -126,6 +127,25 @@ async function fetchPublic(api, url) {
   return { data, contentType: (response.headers.get('content-type') ?? 'application/octet-stream').split(';')[0], filename: url.split('/').at(-1) };
 }
 
+const fileName = url => { const last = String(url ?? '').split(/[?#]/)[0].split('/').at(-1) ?? ''; try { return decodeURIComponent(last); } catch { return last; } };
+
+/**
+ * The file WordPress serves can differ from the original upload: a "-scaled"/"-rotated" copy made with EXIF data the
+ * original may no longer carry, or an image-editor result. Fetch it from its public URL so the target builds sizes
+ * from the same pixels. Without it the target regenerates everything from the original.
+ */
+async function servedFile(ctx, item, originalName) {
+  const url = item.attachment?.url;
+  if (!item.attachment?.urls?.original || !url || fileName(url) === originalName) return undefined;
+  try {
+    const file = await fetchPublic(ctx.source, url);
+    return { data: file.data, filename: fileName(url), contentType: file.contentType };
+  } catch (error) {
+    if (ctx.report.warnings.length < MAX_ERRORS) ctx.report.warnings.push(`Attachment ${item.id}: could not download the served file (${error.message}); sizes were generated from the original upload.`);
+    return undefined;
+  }
+}
+
 async function transferFile(ctx, item, authors) {
   let file;
   try { file = await ctx.source.download('/migration/file', { id: item.id }); }
@@ -134,8 +154,9 @@ async function transferFile(ctx, item, authors) {
     file = await fetchPublic(ctx.source, item.attachment.url);
   }
   const name = item.attachment?.file?.split('/').at(-1) || file.filename;
+  const attached = await servedFile(ctx, item, name);
   const response = await ctx.target.uploadBuffer('/migration/import-file', 'file', file.data, name, {
-    source: ctx.cursor.source, item: JSON.stringify(item), authors: JSON.stringify(authors ?? {}), options: JSON.stringify(ctx.cursor.options),
+    source: ctx.cursor.source, item: JSON.stringify(item), authors: JSON.stringify(authors ?? {}), options: JSON.stringify(ctx.cursor.options), attached,
   }, file.contentType);
   ctx.absorb('media', response.data);
   ctx.cursor.stats.files++;

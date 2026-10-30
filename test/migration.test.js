@@ -154,6 +154,39 @@ test('failed media files are reported once and not retried forever; public URL f
   assert.deepEqual(result.errors[0].source_id, 1);
 });
 
+test('a served -scaled copy is sent with the original, fetched without credentials; failures fall back to the original', async () => {
+  const scaled = { id: 1, type: 'attachment', attachment: { file: '2020/12/ภาคใต้.jpg', url: 'https://old.test/wp-content/uploads/2020/12/ภาคใต้-scaled.jpg', urls: { full: 'https://old.test/wp-content/uploads/2020/12/ภาคใต้-scaled.jpg', original: 'https://old.test/wp-content/uploads/2020/12/ภาคใต้.jpg' } } };
+  for (const fail of [false, true]) {
+    const { src, dst, log } = fakeSites({ source: { ...exportRoutes, 'GET /migration/export': ({ query }) => page(query.post_type === 'attachment' ? [scaled] : []) } });
+    const original = src.fetchImpl;
+    let publicFetches = 0;
+    src.fetchImpl = async (url, options) => {
+      if (url.pathname.includes('/wp-content/')) {
+        publicFetches++;
+        assert.equal(options.headers.Authorization, undefined);
+        assert.match(decodeURIComponent(url.pathname), /ภาคใต้-scaled\.jpg$/);
+        return fail ? new Response('gone', { status: 404 }) : new Response(Buffer.from('ROTATED'), { headers: { 'Content-Type': 'image/jpeg' } });
+      }
+      return original(url, options);
+    };
+    const result = await migration.run(src, dst, { phases: ['media'] });
+    const upload = log.find(r => r.route === '/migration/import-file');
+    assert.equal(publicFetches, 1);
+    assert.equal(upload.body.get('file').name, 'ภาคใต้.jpg');
+    if (fail) {
+      assert.equal(upload.body.get('attached'), null);
+      assert.ok(result.warnings.some(w => /served file/.test(w)));
+    } else {
+      assert.equal(upload.body.get('attached').name, 'ภาคใต้-scaled.jpg');
+      assert.deepEqual(Buffer.from(await upload.body.get('attached').arrayBuffer()), Buffer.from('ROTATED'));
+    }
+  }
+  // Attachments without a separate served copy send only the original.
+  const { src, dst, log } = fakeSites({ source: exportRoutes });
+  await migration.run(src, dst, { phases: ['media'] });
+  assert.equal(log.find(r => r.route === '/migration/import-file').body.get('attached'), null);
+});
+
 test('same-site and import-incapable targets are refused before any import', async () => {
   const { src, log } = fakeSites();
   await assert.rejects(migration.run(src, src, {}), /same site/);

@@ -610,7 +610,7 @@ final class AISM_Migration {
 	private static function context( $authors, $options ) {
 		$list = array();
 		foreach ( is_array( $authors ) ? $authors : array() as $id => $info ) { $list[ (int) $id ] = $info; }
-		return array( 'authors' => $list, 'options' => self::options( $options ), 'resolved' => array(), 'author_report' => array(), 'results' => array(), 'errors' => array(), 'needs_file' => array(), 'skipped_meta' => array() );
+		return array( 'authors' => $list, 'options' => self::options( $options ), 'resolved' => array(), 'author_report' => array(), 'results' => array(), 'errors' => array(), 'warnings' => array(), 'needs_file' => array(), 'skipped_meta' => array() );
 	}
 
 	private static function run_import( $source, $kind, $items, &$ctx, $upload = null ) {
@@ -635,7 +635,7 @@ final class AISM_Migration {
 			wp_defer_term_counting( false );
 			wp_defer_comment_counting( false );
 		}
-		return array( 'kind' => $kind, 'results' => $ctx['results'], 'errors' => $ctx['errors'], 'needs_file' => $ctx['needs_file'], 'authors' => (object) $ctx['author_report'], 'skipped_meta_keys' => array_keys( $ctx['skipped_meta'] ) );
+		return array( 'kind' => $kind, 'results' => $ctx['results'], 'errors' => $ctx['errors'], 'warnings' => $ctx['warnings'], 'needs_file' => $ctx['needs_file'], 'authors' => (object) $ctx['author_report'], 'skipped_meta_keys' => array_keys( $ctx['skipped_meta'] ) );
 	}
 
 	private static function text( $item, $key, $default = '' ) { return isset( $item[ $key ] ) && is_scalar( $item[ $key ] ) ? (string) $item[ $key ] : $default; }
@@ -764,6 +764,11 @@ final class AISM_Migration {
 		if ( ! is_array( $file ) || ! isset( $file['error'], $file['tmp_name'], $file['size'] ) || UPLOAD_ERR_OK !== $file['error'] || ! is_uploaded_file( $file['tmp_name'] ) ) { return self::error( 'aism_invalid_upload', 'Upload the original file using multipart field file.' ); }
 		if ( $file['size'] > wp_max_upload_size() ) { return self::error( 'aism_upload_too_large', 'The file exceeds the WordPress upload limit on the target.', 413 ); }
 		$ctx = self::context( json_decode( is_string( $params['authors'] ?? null ) ? $params['authors'] : '{}', true ), json_decode( is_string( $params['options'] ?? null ) ? $params['options'] : '{}', true ) );
+		// Optional: the file the source actually serves (a -scaled/-rotated or edited copy), used to build sizes.
+		$attached = $files['attached'] ?? null;
+		if ( is_array( $attached ) && isset( $attached['error'], $attached['tmp_name'], $attached['size'], $attached['name'] ) && UPLOAD_ERR_OK === $attached['error'] && is_uploaded_file( $attached['tmp_name'] ) && $attached['size'] <= wp_max_upload_size() ) {
+			$ctx['attached_file'] = $attached;
+		}
 		return self::run_import( $source, 'posts', array( $item ), $ctx, $file );
 	}
 
@@ -792,14 +797,31 @@ final class AISM_Migration {
 			finally { remove_filter( 'upload_dir', $dirs ); }
 			if ( isset( $upload['error'] ) ) { return self::error( 'aism_upload_rejected', $upload['error'] ); }
 		}
+		$served = isset( $ctx['attached_file'] ) && 0 === strpos( (string) $upload['type'], 'image/' ) ? self::place_served_file( $subdir, $ctx['attached_file'], $name, $dirs ) : null;
+		if ( is_wp_error( $served ) ) { $ctx['warnings'][] = 'Attachment ' . (int) $item['id'] . ': the served copy was not stored (' . $served->get_error_message() . '); sizes were generated from the original.'; $served = null; }
+		$main = $served ? $served : $upload;
 		$fields = self::post_fields( $source, $item, 'attachment', $ctx );
 		unset( $fields['post_name'] );
-		$fields = array_merge( $fields, array( 'post_status' => 'inherit', 'post_mime_type' => $upload['type'], 'guid' => $upload['url'], 'meta_input' => array( '_aism_source' => $source . ':' . (int) $item['id'] ) ) );
-		$id = wp_insert_attachment( wp_slash( $fields ), $upload['file'], $fields['post_parent'], true );
-		if ( is_wp_error( $id ) ) { if ( ! $adopted ) { wp_delete_file( $upload['file'] ); } return $id; }
-		// Rollback keeps an adopted file: it was on the target before the migration.
-		if ( $adopted ) { update_post_meta( $id, '_aism_adopted_file', $adopted['relative'] ); }
-		wp_update_attachment_metadata( $id, wp_generate_attachment_metadata( $id, $upload['file'] ) );
+		$fields = array_merge( $fields, array( 'post_status' => 'inherit', 'post_mime_type' => $upload['type'], 'guid' => $main['url'], 'meta_input' => array( '_aism_source' => $source . ':' . (int) $item['id'] ) ) );
+		$id = wp_insert_attachment( wp_slash( $fields ), $main['file'], $fields['post_parent'], true );
+		if ( is_wp_error( $id ) ) {
+			foreach ( array( array( $upload, $adopted ), array( $served, $served && ! empty( $served['adopted'] ) ) ) as $pair ) { if ( $pair[0] && ! $pair[1] ) { wp_delete_file( $pair[0]['file'] ); } }
+			return $id;
+		}
+		// Rollback keeps adopted files: they were on the target before the migration.
+		if ( $adopted ) { add_post_meta( $id, '_aism_adopted_file', $adopted['relative'] ); }
+		if ( $served && ! empty( $served['adopted'] ) ) { add_post_meta( $id, '_aism_adopted_file', $served['relative'] ); }
+		// A site icon needs WordPress's favicon sizes (32, 180, 192 and 270 pixels).
+		$meta_in = isset( $item['meta'] ) && is_array( $item['meta'] ) ? $item['meta'] : array();
+		$icon = isset( $meta_in['_wp_attachment_context'][0] ) && 'site-icon' === $meta_in['_wp_attachment_context'][0];
+		if ( $icon ) {
+			require_once ABSPATH . 'wp-admin/includes/class-wp-site-icon.php';
+			$site_icon = isset( $GLOBALS['wp_site_icon'] ) && $GLOBALS['wp_site_icon'] instanceof WP_Site_Icon ? $GLOBALS['wp_site_icon'] : new WP_Site_Icon();
+			add_filter( 'intermediate_image_sizes_advanced', array( $site_icon, 'additional_sizes' ) );
+		}
+		try { $metadata = $served ? self::served_metadata( $id, $served['file'], $upload['file'] ) : wp_generate_attachment_metadata( $id, $upload['file'] ); }
+		finally { if ( $icon ) { remove_filter( 'intermediate_image_sizes_advanced', array( $site_icon, 'additional_sizes' ) ); } }
+		wp_update_attachment_metadata( $id, $metadata );
 		$urls = self::url_pairs( $source, isset( $item['attachment']['urls'] ) && is_array( $item['attachment']['urls'] ) ? $item['attachment']['urls'] : array(), self::attachment_urls( $id ) );
 		return self::after_post_write( $source, $id, $item, 'attachment', 'created', $ctx, array( 'urls' => $urls ) );
 	}
@@ -823,6 +845,54 @@ final class AISM_Migration {
 		$owner = $wpdb->get_var( $wpdb->prepare( "SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key = '_wp_attached_file' AND meta_value = %s LIMIT 1", $relative ) );
 		if ( $owner ) { return null; }
 		return array( 'file' => $path, 'url' => trailingslashit( $uploads['baseurl'] ) . $relative, 'type' => $check['type'], 'relative' => $relative );
+	}
+
+	/** Store the source's served copy next to the original under its source name (reusing an identical unowned file). */
+	private static function place_served_file( $subdir, $file, $original_name, $dirs ) {
+		$name = sanitize_file_name( wp_basename( (string) $file['name'] ) );
+		if ( '' === $name || $name === $original_name ) { return null; }
+		$reused = self::reusable_file( $subdir, $name, $file['tmp_name'] );
+		if ( $reused ) { return array_merge( $reused, array( 'adopted' => true ) ); }
+		add_filter( 'upload_dir', $dirs );
+		try { $upload = wp_handle_upload( array_merge( $file, array( 'name' => $name ) ), array( 'test_form' => false ) ); }
+		finally { remove_filter( 'upload_dir', $dirs ); }
+		if ( isset( $upload['error'] ) ) { return self::error( 'aism_upload_rejected', $upload['error'] ); }
+		if ( 0 !== strpos( (string) $upload['type'], 'image/' ) ) { wp_delete_file( $upload['file'] ); return null; }
+		return $upload;
+	}
+
+	/**
+	 * Attachment metadata built from the served copy, as on the source: sizes are resized from its pixels and named
+	 * after the file WordPress derived them from (the served name without -scaled/-rotated), and original_image
+	 * points at the original upload.
+	 */
+	private static function served_metadata( $id, $served, $original ) {
+		$size = function_exists( 'wp_getimagesize' ) ? wp_getimagesize( $served ) : @getimagesize( $served );
+		if ( ! $size ) { return wp_generate_attachment_metadata( $id, $original ); }
+		$meta = array( 'width' => (int) $size[0], 'height' => (int) $size[1], 'file' => _wp_relative_upload_path( $served ), 'filesize' => (int) filesize( $served ), 'sizes' => array() );
+		$image_meta = wp_read_image_metadata( $served );
+		if ( $image_meta ) { $meta['image_meta'] = $image_meta; }
+		if ( wp_basename( $original ) !== wp_basename( $served ) ) { $meta['original_image'] = wp_basename( $original ); }
+		$sizes = apply_filters( 'intermediate_image_sizes_advanced', wp_get_registered_image_subsizes(), $meta, $id );
+		if ( ! $sizes ) { return $meta; }
+		$base = preg_replace( '/-(?:scaled|rotated)$/', '', pathinfo( $served, PATHINFO_FILENAME ) );
+		$temp = trailingslashit( get_temp_dir() ) . 'aism-sizes-' . wp_generate_password( 12, false, false );
+		if ( ! wp_mkdir_p( $temp ) ) { return wp_generate_attachment_metadata( $id, $original ); }
+		$copy = $temp . '/' . $base . '.' . pathinfo( $served, PATHINFO_EXTENSION );
+		try {
+			if ( ! copy( $served, $copy ) ) { return wp_generate_attachment_metadata( $id, $original ); }
+			$editor = wp_get_image_editor( $copy );
+			if ( is_wp_error( $editor ) ) { return wp_generate_attachment_metadata( $id, $original ); }
+			$dir = dirname( $served );
+			foreach ( (array) $editor->multi_resize( $sizes ) as $key => $info ) {
+				if ( empty( $info['file'] ) || wp_basename( $info['file'] ) !== $info['file'] ) { continue; }
+				if ( @rename( $temp . '/' . $info['file'], $dir . '/' . $info['file'] ) ) { $meta['sizes'][ $key ] = $info; }
+			}
+			return $meta;
+		} finally {
+			foreach ( (array) glob( $temp . '/*' ) as $left ) { wp_delete_file( $left ); }
+			@rmdir( $temp );
+		}
 	}
 
 	/** Explicit source→target file URL pairs where the relative upload path changed. */
@@ -1180,9 +1250,9 @@ final class AISM_Migration {
 
 	/** Delete a migrated attachment and its generated sizes, keeping an original file that existed before the import. */
 	private static function delete_attachment( $id ) {
-		$adopted = (string) get_post_meta( $id, '_aism_adopted_file', true );
-		$keep = '' === $adopted ? false : realpath( trailingslashit( wp_get_upload_dir()['basedir'] ) . $adopted );
-		$guard = function ( $file ) use ( $keep ) { return $keep && realpath( $file ) === $keep ? '' : $file; };
+		$base = trailingslashit( wp_get_upload_dir()['basedir'] );
+		$keep = array_filter( array_map( function ( $relative ) use ( $base ) { return realpath( $base . $relative ); }, (array) get_post_meta( $id, '_aism_adopted_file', false ) ) );
+		$guard = function ( $file ) use ( $keep ) { return in_array( realpath( $file ), $keep, true ) ? '' : $file; };
 		if ( $keep ) { add_filter( 'wp_delete_file', $guard ); }
 		try { return wp_delete_attachment( $id, true ); }
 		finally { if ( $keep ) { remove_filter( 'wp_delete_file', $guard ); } }

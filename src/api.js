@@ -132,7 +132,15 @@ export class SiteManagerApi {
     if (['pluginzip', 'themezip'].includes(field) && extension !== 'zip') throw new Error('Plugin and theme uploads require a .zip file.');
     const form = new FormData();
     form.append(field, new Blob([data], { type: contentType ?? MIME_TYPES[extension] ?? 'application/octet-stream' }), safeName);
-    for (const [name, value] of Object.entries(fields)) if (value !== undefined) form.append(name, String(value));
+    for (const [name, value] of Object.entries(fields)) {
+      if (value === undefined) continue;
+      // Extra file parts: { data, filename, contentType }.
+      if (value && typeof value === 'object' && Buffer.isBuffer(value.data)) {
+        if (value.data.length < 1 || value.data.length > this.maxUploadBytes) throw new Error('Upload must be nonempty and within WP_AI_MAX_UPLOAD_BYTES (default 32 MiB).');
+        const extra = basename(value.filename).replace(/[\r\n"]/g, '_');
+        form.append(name, new Blob([value.data], { type: value.contentType ?? MIME_TYPES[extra.split('.').at(-1).toLowerCase()] ?? 'application/octet-stream' }), extra);
+      } else form.append(name, String(value));
+    }
     return this.request('POST', path, { form });
   }
 

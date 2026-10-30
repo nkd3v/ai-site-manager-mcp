@@ -241,6 +241,44 @@ $delete->setAccessible( true );
 check( $delete->invoke( null, $owner ) && ! get_post( $owner ) && file_exists( $existing['file'] ), 'Adopted file deleted on rollback' );
 wp_delete_file( $tmp );
 wp_delete_file( $existing['file'] );
+// The served copy (a rotated -scaled file whose original lost its EXIF orientation) becomes the main file; sizes are
+// resized from its pixels and named like the source's. Site icons get WordPress's favicon sizes.
+$source3 = wp_generate_uuid4();
+call_api( 'POST', '/migration/begin', $full, array( 'source' => array( 'site_uuid' => $source3, 'home' => $old, 'siteurl' => $old, 'uploads_baseurl' => $old . '/wp-content/uploads' ) ) );
+$create = new ReflectionMethod( 'AISM_Migration', 'create_attachment' );
+$create->setAccessible( true );
+$uploads = wp_get_upload_dir();
+$folder = $uploads['basedir'] . '/2001/02';
+wp_mkdir_p( $folder );
+$png_file = function ( $path, $w, $h ) { $im = imagecreatetruecolor( $w, $h ); imagepng( $im, $path ); imagedestroy( $im ); };
+$stem = 'aism-photo-' . strtolower( $slug );
+$png_file( "$folder/$stem.png", 1200, 900 );
+$png_file( "$folder/$stem-scaled.png", 900, 1200 );
+$tmp_orig = wp_tempnam( 'aism-o' ); copy( "$folder/$stem.png", $tmp_orig );
+$tmp_served = wp_tempnam( 'aism-s' ); copy( "$folder/$stem-scaled.png", $tmp_served );
+$ctx = array( 'authors' => array(), 'options' => array( 'status' => 'preserve', 'on_existing' => 'update', 'match_slugs' => false, 'author_map' => array(), 'default_author' => $admin->ID ), 'resolved' => array(), 'author_report' => array(), 'results' => array(), 'errors' => array(), 'warnings' => array(), 'needs_file' => array(), 'skipped_meta' => array(),
+	'attached_file' => array( 'name' => "$stem-scaled.png", 'tmp_name' => $tmp_served, 'size' => filesize( $tmp_served ), 'error' => 0, 'type' => 'image/png' ) );
+$photo_item = array( 'id' => 80, 'type' => 'attachment', 'title' => 'Photo', 'status' => 'inherit', 'attachment' => array( 'file' => "2001/02/$stem.png", 'urls' => array( 'full' => $old . "/wp-content/uploads/2001/02/$stem-scaled.png", 'original' => $old . "/wp-content/uploads/2001/02/$stem.png" ) ) );
+$photo = $create->invokeArgs( null, array( $source3, $photo_item, &$ctx, array( 'name' => "$stem.png", 'tmp_name' => $tmp_orig, 'size' => filesize( $tmp_orig ), 'error' => 0, 'type' => 'image/png' ) ) );
+check( is_array( $photo ) && 'created' === $photo['action'], 'Served-copy attachment failed: ' . wp_json_encode( array( $photo, $ctx['warnings'] ) ) );
+$pm = wp_get_attachment_metadata( $photo['target_id'] );
+check( "2001/02/$stem-scaled.png" === get_post_meta( $photo['target_id'], '_wp_attached_file', true ) && 900 === $pm['width'] && 1200 === $pm['height'] && "$stem.png" === $pm['original_image'], 'Served copy not used as main file: ' . wp_json_encode( $pm ) );
+check( isset( $pm['sizes']['thumbnail'], $pm['sizes']['medium'] ) && "$stem-225x300.png" === $pm['sizes']['medium']['file'] && file_exists( "$folder/$stem-225x300.png" ) && ! file_exists( "$folder/$stem-scaled-225x300.png" ), 'Sizes not built from the served copy with source names: ' . wp_json_encode( $pm['sizes'] ) );
+check( 2 === count( get_post_meta( $photo['target_id'], '_aism_adopted_file', false ) ), 'Both reused files not recorded as adopted' );
+check( $delete->invoke( null, $photo['target_id'] ) && file_exists( "$folder/$stem.png" ) && file_exists( "$folder/$stem-scaled.png" ) && ! file_exists( "$folder/$stem-225x300.png" ), 'Rollback did not keep both adopted files and remove generated sizes' );
+$png_file( "$folder/$stem-icon.png", 512, 512 );
+$tmp_icon = wp_tempnam( 'aism-i' ); copy( "$folder/$stem-icon.png", $tmp_icon );
+$ctx['attached_file'] = null; unset( $ctx['attached_file'] );
+$size_filters = has_filter( 'intermediate_image_sizes_advanced' );
+$icon_item = array( 'id' => 81, 'type' => 'attachment', 'title' => 'Icon', 'status' => 'inherit', 'meta' => array( '_wp_attachment_context' => array( 'site-icon' ) ), 'attachment' => array( 'file' => "2001/02/$stem-icon.png" ) );
+$icon = $create->invokeArgs( null, array( $source3, $icon_item, &$ctx, array( 'name' => "$stem-icon.png", 'tmp_name' => $tmp_icon, 'size' => filesize( $tmp_icon ), 'error' => 0, 'type' => 'image/png' ) ) );
+$im = wp_get_attachment_metadata( $icon['target_id'] );
+check( isset( $im['sizes']['site_icon-32'], $im['sizes']['site_icon-180'], $im['sizes']['site_icon-192'], $im['sizes']['site_icon-270'] ), 'Site icon sizes missing: ' . wp_json_encode( array_keys( $im['sizes'] ) ) );
+check( $size_filters === has_filter( 'intermediate_image_sizes_advanced' ), 'Site icon size filter left active' );
+$delete->invoke( null, $icon['target_id'] );
+do { $rolled = call_api( 'POST', '/migration/rollback', $full, array( 'source' => $source3 ) )->get_data(); } while ( $rolled['remaining'] > 0 );
+foreach ( array( "$stem.png", "$stem-scaled.png", "$stem-icon.png" ) as $f ) { wp_delete_file( "$folder/$f" ); }
+foreach ( array( $tmp_orig, $tmp_served, $tmp_icon ) as $f ) { wp_delete_file( $f ); }
 // Cleanup.
 foreach ( array( $src_post, $orphan, $part, $t( 54 ), $t( 61 ) ) as $id ) { if ( $id ) { wp_delete_post( $id, true ); } }
 wp_delete_user( $editor_id );
