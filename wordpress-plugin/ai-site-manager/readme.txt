@@ -3,7 +3,7 @@ Contributors: site-owner
 Tags: rest-api, ai, api-key, content, configuration
 Requires at least: 6.6
 Requires PHP: 7.4
-Stable tag: 1.6.0
+Stable tag: 1.6.1
 License: GPLv2 or later
 
 Scoped API keys for AI-assisted WordPress content, media uploads, approved settings, plugin/theme management, site migration, and user account review and quarantine.
@@ -32,6 +32,8 @@ Scoped API keys for AI-assisted WordPress content, media uploads, approved setti
 See README.md for operational details and docs/AI-GUIDE.md for the full API guide.
 
 == Changelog ==
+= 1.6.1 =
+Fix read-only database queries hanging on hosts with many databases on the same server, such as Wasmer: the check for references to other databases now looks up only the names used in the query instead of listing every database.
 = 1.6.0 =
 Add three optional permissions for administrator keys, never selected by default. database:read lists and describes tables and runs read-only SQL (SELECT, WITH, TABLE, SHOW, DESCRIBE, EXPLAIN) in a read-only transaction with time and row limits; comments, writes, locking, side-effect functions, other databases and the users, user meta and API key tables are refused, and secret-looking values are redacted. diagnostics:read reports environment, configuration, plugin versions, Site Health results, the WP-Cron schedule and the end of the debug or PHP error log. maintenance:write runs an already-scheduled cron event now, flushes the object cache and permalinks, and removes expired transients. The activity log now records the SQL of database queries and the maintenance action.
 = 1.5.0 =

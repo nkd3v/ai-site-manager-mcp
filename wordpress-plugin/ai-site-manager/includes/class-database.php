@@ -87,11 +87,12 @@ final class AISM_Database {
 
 	/**
 	 * Tokenize enough SQL to validate it: words and identifiers outside string literals.
-	 * Returns array( words => upper-case bare words, idents => lower-case names ) or WP_Error.
+	 * Returns array( words => upper-case bare words, idents => lower-case names, names => names as written ) or WP_Error.
 	 */
 	public static function scan( $sql ) {
 		$words = array();
 		$idents = array();
+		$names = array();
 		$len = strlen( $sql );
 		if ( false !== strpos( $sql, '\\' ) ) { return self::error( 'aism_sql_rejected', 'Backslashes are not allowed; use LIKE ... ESCAPE with another character.' ); }
 		for ( $i = 0; $i < $len; ) {
@@ -108,7 +109,7 @@ final class AISM_Database {
 				}
 				if ( $j >= $len ) { return self::error( 'aism_sql_rejected', 'Unterminated quoted string or identifier.' ); }
 				// Double quotes are identifiers under ANSI_QUOTES, so check them as names too.
-				if ( "'" !== $c ) { $idents[] = strtolower( $value ); }
+				if ( "'" !== $c ) { $idents[] = strtolower( $value ); $names[] = $value; }
 				$i = $j + 1;
 				continue;
 			}
@@ -123,12 +124,13 @@ final class AISM_Database {
 				$word = $match[0];
 				if ( ! ctype_digit( $word[0] ) ) { $words[] = strtoupper( $word ); }
 				$idents[] = strtolower( $word );
+				$names[] = $word;
 				$i += strlen( $word );
 				continue;
 			}
 			$i++;
 		}
-		return array( 'words' => $words, 'idents' => $idents );
+		return array( 'words' => $words, 'idents' => $idents, 'names' => $names );
 	}
 
 	/** Validate a read-only query; returns true or WP_Error explaining the rejection. */
@@ -152,15 +154,38 @@ final class AISM_Database {
 		$checked = 'SHOW' === $words[0] && 'CREATE' === ( $words[1] ?? '' ) ? array_slice( $words, 3 ) : $words;
 		$bad = array_values( array_intersect( $checked, $forbidden ) );
 		if ( $bad ) { return self::error( 'aism_sql_rejected', 'Read-only queries cannot use ' . $bad[0] . '.' ); }
-		global $wpdb;
-		// Other databases on the same server belong to other sites or applications.
-		$schemas = array_diff( array_map( 'strtolower', (array) $wpdb->get_col( 'SHOW DATABASES' ) ), array( strtolower( DB_NAME ), 'information_schema' ) );
-		$denied = array_merge( self::blocked_tables(), array( 'mysql', 'performance_schema', 'sys', 'processlist' ), $schemas );
+		$denied = array_merge( self::blocked_tables(), array( 'mysql', 'performance_schema', 'sys', 'processlist' ) );
 		$hit = array_values( array_intersect( $scan['idents'], $denied ) );
+		if ( ! $hit ) {
+			$schemas = self::other_schemas( $scan['names'] );
+			if ( is_wp_error( $schemas ) ) { return $schemas; }
+			$hit = array_values( array_intersect( $scan['idents'], $schemas ) );
+		}
 		if ( $hit ) {
 			return self::error( 'aism_sql_protected', 'Queries cannot reference ' . $hit[0] . '. Only this site\'s database can be read, and user accounts, sessions and API keys are protected; review accounts with the users API.', 403 );
 		}
 		return true;
+	}
+
+	/**
+	 * Which of the query's names are other databases on the same server (they belong to other
+	 * sites or applications). Looks up only these names: listing every database can take minutes
+	 * on shared hosts such as Wasmer. Names are matched as written, which is how the server
+	 * resolves them; returns lower-case names or WP_Error.
+	 */
+	private static function other_schemas( $names ) {
+		global $wpdb;
+		$own = array( strtolower( DB_NAME ), 'information_schema' );
+		$candidates = array();
+		foreach ( $names as $name ) {
+			if ( '' !== $name && ! in_array( strtolower( $name ), $own, true ) ) { $candidates[ $name ] = true; }
+		}
+		if ( ! $candidates ) { return array(); }
+		$candidates = array_keys( $candidates );
+		$placeholders = implode( ',', array_fill( 0, count( $candidates ), '%s' ) );
+		$found = $wpdb->get_col( $wpdb->prepare( "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME IN ({$placeholders})", $candidates ) );
+		if ( '' !== $wpdb->last_error ) { return self::error( 'aism_database_unsupported', 'Could not check the query for references to other databases.', 501 ); }
+		return array_values( array_diff( array_map( 'strtolower', (array) $found ), $own ) );
 	}
 
 	private static function query( $request ) {

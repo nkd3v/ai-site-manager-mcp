@@ -3,7 +3,7 @@ import * as z from 'zod/v4';
 import { SiteRegistry } from './sites.js';
 import * as migration from './migration.js';
 
-export const VERSION = '1.6.0';
+export const VERSION = '1.6.1';
 const resource = z.string().regex(/^[a-zA-Z0-9_-]+$/).refine(v => !['users', 'plugins', 'themes', 'settings', 'batch', 'application-passwords'].includes(v), 'Use a resource returned by discovery.');
 const id = z.number().int().positive();
 const scalar = z.union([z.string(), z.number(), z.boolean()]);

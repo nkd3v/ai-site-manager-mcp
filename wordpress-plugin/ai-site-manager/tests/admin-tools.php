@@ -102,6 +102,12 @@ try {
 	if ( in_array( 'aism_other_site', $wpdb->get_col( 'SHOW DATABASES' ), true ) ) {
 		$protected[] = 'SELECT * FROM aism_other_site.anything';
 		$protected[] = 'SHOW TABLES FROM `aism_other_site`';
+		$protected[] = 'SELECT a.id FROM ' . DB_NAME . '.' . $fixture . ' a JOIN aism_other_site.anything b ON b.id = a.id';
+	}
+	// Other databases are matched by the name as written, so mixed-case names stay protected.
+	if ( in_array( 'AISM_Mixed_Site', $wpdb->get_col( 'SHOW DATABASES' ), true ) ) {
+		$protected[] = 'SELECT * FROM AISM_Mixed_Site.anything';
+		$protected[] = 'SELECT * FROM `AISM_Mixed_Site`.`anything`';
 	}
 	foreach ( $protected as $bad ) {
 		$response = sql( $db, $bad );

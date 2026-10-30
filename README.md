@@ -29,7 +29,7 @@ The server waits for an MCP client to communicate over stdin/stdout. It does not
 npx --yes github:nkd3v/ai-site-manager-mcp --version
 ```
 
-The package runs directly from GitHub; npm registry publication is not required. To pin the current release, use `github:nkd3v/ai-site-manager-mcp#v1.6.0` instead of the unpinned specifier. Use a full commit SHA for an immutable pin.
+The package runs directly from GitHub; npm registry publication is not required. To pin the current release, use `github:nkd3v/ai-site-manager-mcp#v1.6.1` instead of the unpinned specifier. Use a full commit SHA for an immutable pin.
 
 For a local install:
 
