@@ -3,7 +3,7 @@ import * as z from 'zod/v4';
 import { SiteRegistry } from './sites.js';
 import * as migration from './migration.js';
 
-export const VERSION = '1.6.3';
+export const VERSION = '1.7.0';
 const resource = z.string().regex(/^[a-zA-Z0-9_-]+$/).refine(v => !['users', 'plugins', 'themes', 'settings', 'batch', 'application-passwords'].includes(v), 'Use a resource returned by discovery.');
 const id = z.number().int().positive();
 const scalar = z.union([z.string(), z.number(), z.boolean()]);
@@ -122,10 +122,11 @@ export function createServer(connection) {
     ...pair, type: z.enum(['plugin', 'theme']), id: z.string().min(1).max(255).describe('Plugin identifier (folder/file.php or slug) or theme stylesheet from aism_migration_plan.'),
     from: z.enum(['source', 'wordpress.org']).default('source'), activate: z.boolean().default(false),
   }, runPair(migration.transferPackage), false, true);
-  register('aism_migration_run', 'Migrate a whole site in resumable steps: terms, site settings (front page, permalinks, media sizes, widgets, customizer), media (original files), all content types including menus, templates, global styles and patterns, comments, then a finalize pass that remaps IDs and rewrites source URLs to the target. Returns within max_seconds; call again with the returned cursor until done is true. Re-running updates already migrated objects instead of duplicating them, so it also works as an incremental sync (with modified_after). Overwrites target settings and previously migrated objects. Users are not created; authors are matched by login/email.', {
+  register('aism_migration_run', 'Migrate a whole site in resumable steps: terms, site settings (front page, permalinks, media sizes, widgets, customizer), media (original files), all content types including menus, templates, global styles and patterns, comments, then a finalize pass that remaps IDs and rewrites source URLs to the target. User accounts come first, with their roles, profile and password hashes so people keep their passwords (needs users:read on the source key and users:write on the target key, companion 1.7.0+; otherwise authors are only matched by login/email). Target accounts with the same login or email are mapped, never changed. Returns within max_seconds; call again with the returned cursor until done is true. Re-running updates already migrated objects instead of duplicating them, so it also works as an incremental sync (with modified_after). Overwrites target settings and previously migrated objects, including passwords of accounts an earlier run created (use phases or on_existing=skip to avoid that).', {
     ...pair, cursor: z.record(z.string(), z.json()).optional().describe('cursor from the previous call; omit to start.'),
     phases: z.array(z.enum(migration.PHASES)).optional().describe('Subset of phases (finalize always runs). Default: all.'),
     post_types: z.array(z.string().regex(/^[a-z0-9_-]+$/)).optional().describe('Only these post types (include attachment for media). Default: all.'),
+    exclude_users: z.array(z.string().min(1).max(60)).max(100).optional().describe('Source account logins not to copy (case-insensitive). Content they wrote is still matched by login/email or given to default_author.'),
     modified_after: z.string().optional().describe('ISO date: only posts, media and comments changed after it (incremental sync).'),
     max_seconds: z.number().int().min(10).max(600).default(50).describe('Time budget for this call.'),
     ...importShape('preserve'),
@@ -136,7 +137,7 @@ export function createServer(connection) {
     max_seconds: z.number().int().min(10).max(600).default(300), ...importShape('draft'),
   }, runPair(migration.copy), false, true);
   register('aism_migration_status', 'Compare source content counts with what has been migrated into the target, and report finalize state. Read-only.', pair, runPair(migration.status), true, false);
-  register('aism_migration_rollback', 'Undo a migration on the target: permanently delete posts, media files, terms and comments the migration created, restore site settings it changed, and forget its ID map. Objects matched to pre-existing target content are kept. Requires migration:delete on the target.', {
+  register('aism_migration_rollback', 'Undo a migration on the target: permanently delete posts, media files, terms, comments and user accounts the migration created (their remaining content goes to the key owner), restore site settings it changed, and forget its ID map. Objects matched to pre-existing target content are kept. Requires migration:delete on the target.', {
     target: siteName.describe('Configured site name the migration went into.'),
     source: siteName.optional().describe('Configured source site name, used to look up its UUID.'),
     source_uuid: z.string().regex(/^[a-f0-9-]{36}$/).optional().describe('Source site_uuid, for when the source is no longer configured (see aism_migration_manifest on the target: imported_sources).'),

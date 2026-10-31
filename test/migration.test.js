@@ -295,3 +295,47 @@ test('downloads enforce the size limit and surface JSON errors', async () => {
   await assert.rejects(api.download('/migration/file', { id: 1 }), /exceeds/);
   await assert.rejects(api.download('/migration/file', { id: 2 }), error => error.code === 'aism_file_missing' && error.status === 404);
 });
+
+test('run copies user accounts first, skips excluded logins and never returns password hashes', async () => {
+  const users = [
+    { id: 1, login: 'admin', email: 'a@old.test', password_hash: '$P$Bsecrethashadmin000000000000', roles: ['administrator'] },
+    { id: 2, login: 'Owner', email: 'o@old.test', password_hash: '$wp$2y$10$secrethashowner0000000000', roles: ['administrator'] },
+    { id: 3, login: 'wp2shell', email: 'w@old.test', password_hash: '$P$Bsecrethashshell000000000000', roles: ['administrator'] },
+  ];
+  const caps = { import: true, unfiltered_html: true, users_export: true, users_import: true };
+  const { src, dst, log } = fakeSites({
+    source: { ...exportRoutes, 'GET /migration/manifest': () => manifest(SRC_UUID, 'https://old.test', { users: 3, capabilities: caps }),
+      'GET /migration/export': args => args.query.kind === 'users' ? page(users) : exportRoutes['GET /migration/export'](args) },
+    target: {
+      'GET /migration/manifest': () => manifest(DST_UUID, 'https://new.test', { capabilities: caps, post_types: { post: { total: 9 }, attachment: { total: 0 }, nav_menu_item: { total: 0 } } }),
+      'POST /migration/import': ({ body }) => body.kind === 'users'
+        ? { results: body.items.map(u => ({ source_id: u.id, target_id: u.id + 100, action: u.login === 'admin' ? 'matched' : 'created', login: u.login, roles: u.roles })), errors: [], warnings: [] }
+        : { results: body.items.filter(i => i.type !== 'attachment').map(i => ({ source_id: i.id, target_id: i.id + 100, action: 'created' })), errors: [], needs_file: body.items.filter(i => i.type === 'attachment').map(i => i.id) },
+    },
+  });
+  const result = await migration.run(src, dst, { exclude_users: ['WP2SHELL'] });
+  assert.equal(result.done, true);
+  const imports = log.filter(r => r.site === 'new' && r.route === '/migration/import');
+  assert.equal(imports[0].body.kind, 'users', 'Accounts must be imported before content');
+  assert.deepEqual(imports[0].body.items.map(u => u.login), ['admin', 'Owner']);
+  assert.equal(imports[0].body.items[1].password_hash, users[1].password_hash, 'The hash is passed to the target');
+  assert.deepEqual(result.users.map(u => [u.login, u.action]), [['admin', 'matched'], ['Owner', 'created']]);
+  assert.equal(result.stats.skipped, 1);
+  assert.ok(!JSON.stringify(result).includes('secrethash'), 'Password hashes must never appear in the result');
+  const plan = await migration.plan(src, dst);
+  assert.deepEqual(plan.users, { source_total: 3, migrated: true });
+});
+
+test('run leaves accounts alone when a key lacks the users permissions or a site runs an older companion', async () => {
+  const { src, dst, log } = fakeSites({ source: { ...exportRoutes, 'GET /migration/manifest': () => manifest(SRC_UUID, 'https://old.test', { capabilities: { import: true, unfiltered_html: true, users_export: false, users_import: false } }) } });
+  const result = await migration.run(src, dst, {});
+  assert.ok(result.warnings.some(w => /1\.7\.0/.test(w)), 'Older target companion is reported');
+  assert.ok(!log.some(r => r.query?.kind === 'users' || r.body?.kind === 'users'));
+  const blocked = fakeSites({
+    source: { ...exportRoutes, 'GET /migration/manifest': () => manifest(SRC_UUID, 'https://old.test', { capabilities: { import: true, users_export: false, users_import: false } }) },
+    target: { 'GET /migration/manifest': () => manifest(DST_UUID, 'https://new.test', { capabilities: { import: true, unfiltered_html: true, users_export: true, users_import: true } }) },
+  });
+  const second = await migration.run(blocked.src, blocked.dst, {});
+  assert.ok(second.warnings.some(w => /source key needs users:read/.test(w)));
+  assert.ok(!blocked.log.some(r => r.query?.kind === 'users'));
+});

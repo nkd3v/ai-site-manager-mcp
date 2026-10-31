@@ -61,7 +61,9 @@ $export = call_api( 'GET', '/migration/export', $read, null, array( 'kind' => 'p
 $meta = (array) $export['items'][0]['meta'];
 check( 1 === $export['total'] && isset( $meta['plain_meta'] ) && ! isset( $meta['stripe_secret_key'] ) && ! isset( $meta['object_meta'] ) && array( array( 'a' => 1 ) ) === $meta['std_meta'], 'Export meta filtering wrong: ' . wp_json_encode( $meta ) );
 check( in_array( 'stripe_secret_key', $export['skipped_meta_keys'], true ) && in_array( 'object_meta', $export['skipped_meta_keys'], true ), 'Skipped meta not reported' );
-check( call_api( 'GET', '/migration/export', $read, null, array( 'kind' => 'users' ) )->get_status() === 400, 'Invalid export kind accepted' );
+check( call_api( 'GET', '/migration/export', $read, null, array( 'kind' => 'nope' ) )->get_status() === 400, 'Invalid export kind accepted' );
+check( call_api( 'GET', '/migration/export', $read, null, array( 'kind' => 'users' ) )->get_status() === 403, 'Users exported without users:read' );
+check( false === $manifest['capabilities']['users_export'] && false === $manifest['capabilities']['users_import'], 'User migration advertised without users scopes' );
 check( call_api( 'GET', '/migration/export', $read, null, array( 'kind' => 'posts', 'post_type' => 'revision' ) )->get_status() === 400, 'Revision export accepted' );
 $site = call_api( 'GET', '/migration/export', $read, null, array( 'kind' => 'site' ) )->get_data();
 $site_options = (array) $site['items'][0]['options'];
@@ -88,7 +90,8 @@ $import = function ( $kind, $items, $options = array(), $authors = array() ) use
 	return call_api( 'POST', '/migration/import', $full, array( 'source' => $source, 'kind' => $kind, 'items' => $items, 'options' => $options, 'authors' => $authors ) );
 };
 check( 400 === $import( 'posts', array_fill( 0, 101, array( 'id' => 1 ) ) )->get_status(), 'Oversized import accepted' );
-check( 400 === $import( 'users', array() )->get_status(), 'Invalid import kind accepted' );
+check( 400 === $import( 'nope', array() )->get_status(), 'Invalid import kind accepted' );
+check( 403 === $import( 'users', array( array( 'id' => 1, 'login' => 'x' ) ) )->get_status(), 'Users imported without users:write' );
 $slug = 'mig-' . wp_generate_password( 6, false, false );
 $terms = $import( 'terms', array(
 	array( 'id' => 901, 'taxonomy' => 'category', 'name' => 'Child', 'slug' => $slug . '-child', 'parent' => 900, 'description' => 'See ' . $old . '/child/', 'meta' => array( 'tone' => array( 'warm' ) ) ),
@@ -279,6 +282,65 @@ $delete->invoke( null, $icon['target_id'] );
 do { $rolled = call_api( 'POST', '/migration/rollback', $full, array( 'source' => $source3 ) )->get_data(); } while ( $rolled['remaining'] > 0 );
 foreach ( array( "$stem.png", "$stem-scaled.png", "$stem-icon.png" ) as $f ) { wp_delete_file( "$folder/$f" ); }
 foreach ( array( $tmp_orig, $tmp_served, $tmp_icon ) as $f ) { wp_delete_file( $f ); }
+// User accounts: copied with password hash, roles and profile only with users:read (source) and users:write (target).
+global $wpdb;
+$ukey = key_for( $admin->ID, array_merge( $all, array( 'users:read', 'users:write' ) ) );
+$um = call_api( 'GET', '/migration/manifest', $ukey )->get_data();
+check( true === $um['capabilities']['users_export'] && true === $um['capabilities']['users_import'] && $um['users'] >= 2, 'User migration capabilities wrong: ' . wp_json_encode( $um['capabilities'] ) );
+$prefix = $wpdb->get_blog_prefix();
+$member = wp_insert_user( array( 'user_login' => 'aism-mig-member-' . strtolower( $slug ), 'user_pass' => 'member-password-1', 'user_email' => 'member-' . wp_generate_uuid4() . '@example.test', 'role' => 'author', 'first_name' => 'Mem', 'display_name' => 'Member One' ) );
+check( is_int( $member ), 'Fixture user failed' );
+update_user_meta( $member, 'description', 'Bio' );
+update_user_meta( $member, 'stripe_api_key', 'sk_live_x' );
+update_user_meta( $member, $prefix . 'user-settings', 'editor=html' );
+update_user_meta( $member, $prefix . 'dashboard_quick_press_last_post_id', 5 );
+WP_Session_Tokens::get_instance( $member )->create( time() + 3600 );
+$uexport = call_api( 'GET', '/migration/export', $ukey, null, array( 'kind' => 'users', 'ids' => (string) $member ) );
+check( 200 === $uexport->get_status() && false !== strpos( (string) ( $uexport->get_headers()['Cache-Control'] ?? '' ), 'no-store' ), 'User export failed or cacheable' );
+$uitem = $uexport->get_data()['items'][0];
+$umeta = (array) $uitem['meta'];
+$usite = (array) $uitem['site_meta'];
+check( get_userdata( $member )->user_pass === $uitem['password_hash'] && array( 'author' ) === $uitem['roles'] && false === $uitem['quarantined'], 'User export fields wrong' );
+check( array( 'Bio' ) === $umeta['description'] && ! isset( $umeta['session_tokens'] ) && ! isset( $umeta['stripe_api_key'] ) && ! isset( $umeta[ $prefix . 'capabilities' ] ), 'User export meta filtering wrong: ' . wp_json_encode( array_keys( $umeta ) ) );
+check( array( 'editor=html' ) === $usite['user-settings'] && ! isset( $usite['capabilities'] ) && ! isset( $usite['user_level'] ) && ! isset( $usite['dashboard_quick_press_last_post_id'] ), 'Per-site user meta wrong: ' . wp_json_encode( array_keys( $usite ) ) );
+// Import under a fake source: a new account is created; target accounts with the same login are mapped, never changed.
+$us = wp_generate_uuid4();
+check( 200 === call_api( 'POST', '/migration/begin', $ukey, array( 'source' => array( 'site_uuid' => $us, 'home' => 'https://old3.example' ) ) )->get_status(), 'User source begin failed' );
+$uimport = function ( $items, $options = array(), $kind = 'users', $authors = array() ) use ( $ukey, $us ) { return call_api( 'POST', '/migration/import', $ukey, array( 'source' => $us, 'kind' => $kind, 'items' => $items, 'options' => $options, 'authors' => $authors ) ); };
+$copy_login = 'aism-mig-copy-' . strtolower( $slug );
+$copy = array_merge( $uitem, array( 'id' => 500, 'login' => $copy_login, 'email' => 'copy-' . wp_generate_uuid4() . '@example.test', 'nicename' => $copy_login, 'roles' => array( 'editor', 'aism-missing-role' ), 'registered' => '2015-05-05 05:05:05' ) );
+$copy['meta'] = array_merge( $umeta, array( $wpdb->base_prefix . 'capabilities' => array( array( 'administrator' => true ) ), 'other_capabilities' => array( array( 'administrator' => true ) ), '_aism_source' => array( 'spoof' ), 'session_tokens' => array( array() ) ) );
+$copy['site_meta'] = array_merge( $usite, array( 'capabilities' => array( array( 'administrator' => true ) ), 'user_level' => array( 10 ), '../x' => array( 1 ) ) );
+$admin_hash = get_userdata( $admin->ID )->user_pass;
+$quarantined = array( 'id' => 502, 'login' => 'aism-mig-q-' . strtolower( $slug ), 'quarantined' => true, 'password_hash' => $uitem['password_hash'] );
+$ur = $uimport( array( $copy, array( 'id' => 501, 'login' => 'aism-admin', 'email' => 'x@example.test', 'password_hash' => '$P$Bnotthepassword000000000000', 'roles' => array( 'subscriber' ) ), $quarantined, array( 'id' => 503, 'login' => '<bad>' ) ) );
+check( 200 === $ur->get_status(), 'User import failed: ' . wp_json_encode( $ur->get_data() ) );
+$ur = $ur->get_data();
+check( 3 === count( $ur['results'] ) && 'created' === $ur['results'][0]['action'] && array( 'editor' ) === $ur['results'][0]['roles'] && 'aism_invalid_user' === $ur['errors'][0]['code'], 'User import results wrong: ' . wp_json_encode( $ur ) );
+check( 'matched' === $ur['results'][1]['action'] && $admin->ID === $ur['results'][1]['target_id'] && 'skipped' === $ur['results'][2]['action'] && ! get_user_by( 'login', $quarantined['login'] ), 'Matched or quarantined account handled wrong' );
+check( $admin_hash === get_userdata( $admin->ID )->user_pass && in_array( 'administrator', get_userdata( $admin->ID )->roles, true ), 'An existing target account was changed' );
+check( (bool) preg_grep( '/aism-missing-role/', $ur['warnings'] ) && (bool) preg_grep( '/quarantined/', $ur['warnings'] ), 'User warnings missing: ' . wp_json_encode( $ur['warnings'] ) );
+$copied = get_user_by( 'login', $copy_login );
+check( $copied && wp_check_password( 'member-password-1', $copied->user_pass, $copied->ID ) && $uitem['password_hash'] === $copied->user_pass, 'Password hash not copied' );
+check( array( 'editor' ) === array_values( $copied->roles ) && ! user_can( $copied, 'manage_options' ) && '' === get_user_meta( $copied->ID, 'other_capabilities', true ), 'Imported roles or capability meta wrong' );
+check( 'Bio' === get_user_meta( $copied->ID, 'description', true ) && 'Mem' === get_user_meta( $copied->ID, 'first_name', true ) && 'editor=html' === get_user_meta( $copied->ID, $prefix . 'user-settings', true ) && 'Member One' === $copied->display_name && '2015-05-05 05:05:05' === $copied->user_registered, 'Profile not copied' );
+check( '' === get_user_meta( $copied->ID, 'session_tokens', true ) && $us . ':500' === get_user_meta( $copied->ID, '_aism_source', true ), 'Session or marker meta wrong' );
+// Authors resolve through the account map, even when the author's login differs in the export.
+$authored = $uimport( array( array( 'id' => 600, 'type' => 'post', 'status' => 'draft', 'title' => 'By copy', 'author' => 500 ) ), array(), 'posts', array( 500 => array( 'login' => 'renamed-elsewhere' ) ) )->get_data();
+check( $copied->ID === (int) get_post( $authored['results'][0]['target_id'] )->post_author, 'Post author not resolved through the account map' );
+// Re-importing updates the created account (new hash and name) without duplicating it; skip leaves it alone.
+$new_hash = wp_hash_password( 'member-password-2' );
+$again = $uimport( array( array_merge( $copy, array( 'display_name' => 'Renamed', 'password_hash' => $new_hash ) ) ) )->get_data();
+$copied = get_userdata( $copied->ID );
+check( 'updated' === $again['results'][0]['action'] && $copied->ID === $again['results'][0]['target_id'] && 'Renamed' === $copied->display_name && wp_check_password( 'member-password-2', $copied->user_pass, $copied->ID ), 'User re-import wrong' );
+$skipped_user = $uimport( array( array_merge( $copy, array( 'display_name' => 'Ignored' ) ) ), array( 'on_existing' => 'skip' ) )->get_data();
+check( 'skipped' === $skipped_user['results'][0]['action'] && 'Renamed' === get_userdata( $copied->ID )->display_name, 'on_existing=skip changed the account' );
+// Rollback deletes the created account and gives its other content to the key owner; matched accounts stay.
+$own = wp_insert_post( array( 'post_type' => 'post', 'post_status' => 'draft', 'post_title' => 'Owned', 'post_author' => $copied->ID ) );
+do { $rolled = call_api( 'POST', '/migration/rollback', $ukey, array( 'source' => $us ) )->get_data(); } while ( $rolled['remaining'] > 0 );
+check( ! get_userdata( $copied->ID ) && get_userdata( $admin->ID ) && $admin->ID === (int) get_post( $own )->post_author && array() === $rolled['errors'], 'User rollback wrong: ' . wp_json_encode( $rolled ) );
+wp_delete_post( $own, true );
+wp_delete_user( $member );
 // Cleanup.
 foreach ( array( $src_post, $orphan, $part, $t( 54 ), $t( 61 ) ) as $id ) { if ( $id ) { wp_delete_post( $id, true ); } }
 wp_delete_user( $editor_id );

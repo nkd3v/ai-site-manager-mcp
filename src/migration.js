@@ -1,7 +1,8 @@
 import { ApiError } from './api.js';
 
-// Site settings come before media so the source's image sizes apply when media sizes are generated.
-export const PHASES = ['terms', 'site', 'media', 'content', 'comments', 'finalize'];
+// Accounts come first so content keeps its authors; site settings come before media so the source's image sizes
+// apply when media sizes are generated.
+export const PHASES = ['users', 'terms', 'site', 'media', 'content', 'comments', 'finalize'];
 const MAX_ERRORS = 50;
 
 const strip = url => String(url ?? '').replace(/\/+$/, '');
@@ -73,6 +74,9 @@ export async function plan(source, target) {
     taxonomies[name] = { source_total: total, supported_on_target: name in tm.taxonomies };
     if (!(name in tm.taxonomies)) warnings.push(`Taxonomy ${name} (${total}) is not registered on the target yet.`);
   }
+  const users = { source_total: sm.users ?? null, migrated: Boolean(sm.capabilities?.users_export && tm.capabilities?.users_import) };
+  const usersBlocked = usersUnavailable(sm, tm);
+  if (usersBlocked) warnings.push(usersBlocked);
   const previous = (tm.imported_sources ?? []).find(s => s.site_uuid === sm.site_uuid) ?? null;
   const targetContent = ['post', 'page'].reduce((sum, type) => sum + (tm.post_types[type]?.total ?? 0), 0);
   const recommended = { match_slugs: targetContent <= 3, status: 'preserve' };
@@ -82,10 +86,10 @@ export async function plan(source, target) {
     target: { name: tm.name, home: tm.home, site_uuid: tm.site_uuid, wordpress: tm.wordpress_version, php: tm.php_version, theme: tm.theme, max_upload_bytes: tm.limits?.max_upload_bytes },
     previous_migration: previous,
     recommended_options: recommended,
-    warnings, themes, plugins, post_types, taxonomies,
+    warnings, themes, plugins, post_types, taxonomies, users,
     not_migrated: sm.not_migrated,
     steps: [
-      'Confirm scope with the operator: whole site or selected posts, whether to keep publication status, and whether target content may be overwritten.',
+      'Confirm scope with the operator: whole site or selected posts, whether to keep publication status, whether target content may be overwritten, and which user accounts to leave out (exclude_users).',
       'Transfer required themes (parents first) and active plugins with aism_migration_transfer_package (activate: true for plugins active on the source). Re-run aism_migration_plan until required post types and taxonomies are supported.',
       'Run aism_migration_run repeatedly with the returned cursor until done is true. Phases: ' + PHASES.join(' → ') + '.',
       'Activate the source theme on the target (aism_theme_action) if it is not active, then check aism_migration_status and spot-check content, menus, media and the front page.',
@@ -95,7 +99,7 @@ export async function plan(source, target) {
 }
 
 function context(source, target, cursor, deadline) {
-  const report = { errors: [], warnings: [], authors: {}, skipped_meta_keys: new Set(), unresolved: [] };
+  const report = { errors: [], warnings: [], authors: {}, skipped_meta_keys: new Set(), unresolved: [], users: [] };
   const absorb = (kind, data) => {
     for (const result of data.results ?? []) cursor.stats[result.action] = (cursor.stats[result.action] ?? 0) + 1;
     for (const error of data.errors ?? []) {
@@ -111,6 +115,14 @@ function context(source, target, cursor, deadline) {
     if (report.errors.length < MAX_ERRORS) report.errors.push({ kind, source_id, code: error.code ?? 'aism_client_error', message: error.message });
   };
   return { source, target, cursor, deadline, report, absorb, fail, expired: () => Date.now() > deadline };
+}
+
+/** Why the users phase cannot run, or null. Old companions do not report the capability. */
+function usersUnavailable(sm, tm) {
+  if (sm.capabilities?.users_export === undefined || tm.capabilities?.users_import === undefined) return 'User accounts are not migrated: both sites need AI Site Manager 1.7.0 or later. Authors are matched by login or email instead.';
+  if (!sm.capabilities.users_export) return 'User accounts are not migrated: the source key needs users:read and its owner list_users and edit_users. Authors are matched by login or email instead.';
+  if (!tm.capabilities.users_import) return 'User accounts are not migrated: the target key needs users:write and its owner create_users, edit_users and promote_users. Authors are matched by login or email instead.';
+  return null;
 }
 
 async function exportPage(api, query) {
@@ -202,6 +214,22 @@ function advancePaged(cursor, page) {
 }
 
 const UNITS = {
+  async users(ctx) {
+    const page = await exportPage(ctx.source, { kind: 'users', page: ctx.cursor.page, per_page: 100 });
+    const excluded = new Set((ctx.cursor.exclude_users ?? []).map(login => login.toLowerCase()));
+    const items = (page.items ?? []).filter(item => {
+      if (!excluded.has(String(item.login).toLowerCase())) return true;
+      ctx.cursor.stats.skipped++;
+      return false;
+    });
+    // Password hashes go straight from source to target and are never part of the returned report.
+    if (items.length) {
+      const response = await ctx.target.request('POST', '/migration/import', { body: { source: ctx.cursor.source, kind: 'users', items, options: ctx.cursor.options } });
+      ctx.absorb('users', response.data);
+      for (const result of response.data.results ?? []) if (ctx.report.users.length < 200) ctx.report.users.push({ login: result.login, action: result.action, target_id: result.target_id, roles: result.roles });
+    }
+    return advancePaged(ctx.cursor, page);
+  },
   async terms(ctx) {
     const page = await exportPage(ctx.source, { kind: 'terms', page: ctx.cursor.page, per_page: 100 });
     return await importPage(ctx, 'terms', page) && advancePaged(ctx.cursor, page);
@@ -238,7 +266,7 @@ function importOptions(args, status = 'preserve') {
 }
 
 function summary(ctx, extra) {
-  return { ...extra, stats: ctx.cursor.stats, errors: ctx.report.errors, unresolved_references: ctx.report.unresolved, warnings: ctx.report.warnings, authors: ctx.report.authors, skipped_meta_keys: [...ctx.report.skipped_meta_keys] };
+  return { ...extra, stats: ctx.cursor.stats, errors: ctx.report.errors, unresolved_references: ctx.report.unresolved, warnings: ctx.report.warnings, ...(ctx.report.users.length ? { users: ctx.report.users } : {}), authors: ctx.report.authors, skipped_meta_keys: [...ctx.report.skipped_meta_keys] };
 }
 
 /** Run a whole-site migration in resumable, time-bounded steps. */
@@ -249,7 +277,7 @@ export async function run(source, target, args = {}) {
   const warnings = [];
   if (cursor) {
     const valid = cursor.v === 1 && cursor.source === sm.site_uuid && Array.isArray(cursor.phases) && cursor.phases.every(phase => PHASES.includes(phase))
-      && Array.isArray(cursor.types) && Array.isArray(cursor.failed_files) && Number.isInteger(cursor.step) && Number.isInteger(cursor.type) && Number.isInteger(cursor.page) && cursor.stats && typeof cursor.stats === 'object';
+      && Array.isArray(cursor.types) && Array.isArray(cursor.failed_files) && (cursor.exclude_users === undefined || (Array.isArray(cursor.exclude_users) && cursor.exclude_users.every(login => typeof login === 'string'))) && Number.isInteger(cursor.step) && Number.isInteger(cursor.type) && Number.isInteger(cursor.page) && cursor.stats && typeof cursor.stats === 'object';
     if (!valid) throw new ApiError('This cursor is invalid or belongs to another source site. Start again without a cursor; imports are idempotent.', 0, 'aism_invalid_cursor');
   } else {
     const tm = await manifest(target);
@@ -261,10 +289,12 @@ export async function run(source, target, args = {}) {
     types = types.filter(t => tm.post_types[t]).sort((a, b) => (a === 'nav_menu_item') - (b === 'nav_menu_item'));
     let phases = (args.phases ?? PHASES).filter(phase => PHASES.includes(phase));
     if (wanted && !wanted.includes('attachment')) phases = phases.filter(phase => phase !== 'media');
+    const usersBlocked = phases.includes('users') ? usersUnavailable(sm, tm) : null;
+    if (usersBlocked) { warnings.push(usersBlocked); phases = phases.filter(phase => phase !== 'users'); }
     if (!phases.includes('finalize')) phases.push('finalize');
     phases.sort((a, b) => PHASES.indexOf(a) - PHASES.indexOf(b));
     cursor = {
-      v: 1, source: sm.site_uuid, phases, step: 0, types, type: 0, page: 1, options: importOptions(args), modified_after: args.modified_after, failed_files: [],
+      v: 1, source: sm.site_uuid, phases, step: 0, types, type: 0, page: 1, options: importOptions(args), modified_after: args.modified_after, failed_files: [], exclude_users: args.exclude_users ?? [],
       stats: { created: 0, updated: 0, matched: 0, skipped: 0, files: 0, finalized: 0, unresolved: 0, errors: 0 },
     };
   }
@@ -381,6 +411,7 @@ export async function status(source, target) {
   return {
     started: true, record: data.source, finalized: Boolean(data.source.finalized_at) && pending === 0, pending_finalize: pending,
     post_types, terms: { source: terms, on_target: data.counts.term?.mapped ?? 0 }, comments: { source: sm.comments, on_target: data.counts.comment?.mapped ?? 0 },
+    users: { source: sm.users ?? null, on_target: data.counts.user?.mapped ?? 0, created: data.counts.user?.created ?? 0 },
     note: 'Source counts exclude trash; target counts include objects matched to existing target content. Differences usually mean filtered post types, unregistered types/taxonomies, failed files or a run still in progress.',
   };
 }
@@ -398,5 +429,5 @@ export async function rollback(target, sourceUuid, { max_seconds = 50 } = {}) {
     remaining = data.remaining;
     if (!remaining) break;
   }
-  return { ...total, remaining, done: remaining === 0, next: remaining ? 'Call aism_migration_rollback again to continue.' : 'Rollback finished. Objects matched to pre-existing target content were left in place with their imported changes.' };
+  return { ...total, remaining, done: remaining === 0, next: remaining ? 'Call aism_migration_rollback again to continue.' : 'Rollback finished. Objects matched to pre-existing target content were left in place with their imported changes. Deleted accounts\' remaining content was reassigned to the target key owner.' };
 }

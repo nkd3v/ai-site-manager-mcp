@@ -3,7 +3,7 @@ Contributors: site-owner
 Tags: rest-api, ai, api-key, content, configuration
 Requires at least: 6.6
 Requires PHP: 7.4
-Stable tag: 1.6.3
+Stable tag: 1.7.0
 License: GPLv2 or later
 
 Scoped API keys for AI-assisted WordPress content, media uploads, approved settings, plugin/theme management, site migration, and user account review and quarantine.
@@ -32,6 +32,8 @@ Scoped API keys for AI-assisted WordPress content, media uploads, approved setti
 See README.md for operational details and docs/AI-GUIDE.md for the full API guide.
 
 == Changelog ==
+= 1.7.0 =
+Migrations can copy user accounts. With users:read on the source key and users:write on the target key, the new users export and import copy every account with its roles, profile, metadata and password hash, so people sign in on the target with their existing passwords. Accounts already on the target with the same login or email are mapped and never changed. Per-site user settings are renamed to the target's table prefix; sessions, application passwords, capability metadata and credential-like metadata are never copied, and quarantined accounts are skipped. Content keeps its authors through the account map. Rollback deletes accounts the migration created and gives their remaining content to the key owner. The manifest reports users_export and users_import capabilities and the account count.
 = 1.6.3 =
 Migrated images now match what the source serves. When the source serves a different file than the original upload (a -scaled or -rotated copy, for example one rotated using EXIF data the original no longer carries), import-file accepts it as an optional attached file: it becomes the main file, sizes are resized from its pixels with the source's file names, and original_image still points at the original. Previously such photos could appear sideways. Site icons get WordPress's favicon sizes (32, 180, 192 and 270 pixels). Import responses include warnings.
 = 1.6.2 =

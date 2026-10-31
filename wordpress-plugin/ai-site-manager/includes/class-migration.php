@@ -20,6 +20,12 @@ final class AISM_Migration {
 	const SKIP_IMPORT_META = '/^(_aism_|_wp_attached_file$|_wp_attachment_metadata$|_wp_attachment_backup_sizes$|_edit_lock$|_edit_last$|_wp_trash_meta_|_encloseme$|_pingme$)/';
 	/** Imported even when the key owner lacks unfiltered_html. */
 	const STRUCTURAL_META = '/^(_thumbnail_id|_wp_page_template|_wp_attachment_image_alt|_menu_item_[a-z_]+)$/D';
+	/** User meta never copied: sessions, application passwords, roles (sent as roles) and anything credential-like. */
+	const SKIP_USER_META = '/^(_aism_|aism_|session_tokens$|_application_passwords$|default_password_nag$|community-events-location$)|capabilities$|user_level$|password|passwd|secret|token|api.?key|credential|salt|nonce|session/i';
+	/** Per-site user meta (stored as {table prefix}{suffix}) that is never copied: roles, user level and post IDs. */
+	const SKIP_SITE_USER_META = array( 'capabilities', 'user_level', 'dashboard_quick_press_last_post_id' );
+	/** Password hash formats WordPress can check: phpass, bcrypt, WordPress 6.8+ ($wp$...), argon2 and legacy MD5. */
+	const PASSWORD_HASH = '#^(?:\$[A-Za-z0-9./$=,+-]{20,250}|[a-f0-9]{32})$#D';
 	const PORTABLE_OPTIONS = array(
 		'blogname', 'blogdescription', 'timezone_string', 'gmt_offset', 'date_format', 'time_format', 'start_of_week', 'WPLANG',
 		'permalink_structure', 'category_base', 'tag_base', 'show_on_front', 'page_on_front', 'page_for_posts', 'wp_page_for_privacy_policy',
@@ -53,13 +59,13 @@ final class AISM_Migration {
 		}
 		if ( ! $read && is_multisite() ) { return self::error( 'aism_multisite_migration', 'Importing through this API is supported on single-site WordPress only.', 403 ); }
 		switch ( $route ) {
-			case '/migration/manifest': return self::manifest();
+			case '/migration/manifest': return self::manifest( $key );
 			case '/migration/export': return self::export( $request, $key );
 			case '/migration/file': return self::file( $request );
 			case '/migration/package': return self::package( $request );
 			case '/migration/status': return self::status( $request );
 			case '/migration/begin': return self::begin( $request );
-			case '/migration/import': return self::import( $request );
+			case '/migration/import': return self::import( $request, $key );
 			case '/migration/import-file': return self::import_file( $request );
 			case '/migration/finalize': return self::finalize( $request );
 			case '/migration/rollback': return self::rollback( $request );
@@ -160,6 +166,17 @@ final class AISM_Migration {
 		return $keys;
 	}
 
+	private static function has_scope( $key, $scope ) { return is_array( $key ) && in_array( $scope, (array) ( $key['scopes'] ?? array() ), true ); }
+
+	/** User accounts (with password hashes) leave the source only with users:read and full user management rights. */
+	private static function can_export_users( $key ) {
+		return self::has_scope( $key, 'users:read' ) && current_user_can( 'list_users' ) && current_user_can( 'edit_users' ) && ! is_multisite();
+	}
+
+	private static function can_import_users( $key ) {
+		return self::has_scope( $key, 'users:write' ) && current_user_can( 'create_users' ) && current_user_can( 'edit_users' ) && current_user_can( 'promote_users' ) && ! is_multisite();
+	}
+
 	private static function author_info( $user_id, &$authors ) {
 		$user_id = (int) $user_id;
 		if ( $user_id && ! isset( $authors[ $user_id ] ) ) {
@@ -171,7 +188,7 @@ final class AISM_Migration {
 
 	/* ---------- Source: manifest, export and downloads ---------- */
 
-	private static function manifest() {
+	private static function manifest( $key ) {
 		require_once ABSPATH . 'wp-admin/includes/plugin.php';
 		$post_types = array();
 		foreach ( self::post_types() as $name ) {
@@ -199,10 +216,11 @@ final class AISM_Migration {
 			'permalink_structure' => get_option( 'permalink_structure' ), 'theme' => array( 'stylesheet' => get_stylesheet(), 'template' => get_template() ),
 			'themes' => $themes, 'plugins' => $plugins, 'mu_plugins' => array_values( wp_list_pluck( get_mu_plugins(), 'Name' ) ), 'dropins' => array_keys( get_dropins() ),
 			'post_types' => $post_types, 'taxonomies' => $taxonomies, 'comments' => (int) $comments,
+			'users' => current_user_can( 'list_users' ) ? (int) count_users()['total_users'] : null,
 			'imported_sources' => array_values( self::sources() ),
-			'capabilities' => array( 'export' => current_user_can( 'export' ), 'import' => current_user_can( 'import' ) && ! is_multisite(), 'unfiltered_html' => current_user_can( 'unfiltered_html' ), 'upload_files' => current_user_can( 'upload_files' ) ),
+			'capabilities' => array( 'export' => current_user_can( 'export' ), 'import' => current_user_can( 'import' ) && ! is_multisite(), 'unfiltered_html' => current_user_can( 'unfiltered_html' ), 'upload_files' => current_user_can( 'upload_files' ), 'users_export' => self::can_export_users( $key ), 'users_import' => self::can_import_users( $key ) ),
 			'limits' => array( 'max_per_page' => self::MAX_PER_PAGE, 'max_upload_bytes' => (int) wp_max_upload_size(), 'zip_packages' => class_exists( 'ZipArchive' ) || file_exists( ABSPATH . 'wp-admin/includes/class-pclzip.php' ) ),
-			'not_migrated' => array( 'User accounts and passwords (authors are matched by login or email)', 'Must-use plugins and drop-ins', 'Custom database tables and files outside uploads, plugins and themes', 'Revisions, spam/trashed comments and credential-like metadata or options' ),
+			'not_migrated' => array( 'User accounts unless the source key has users:read and the target key users:write (otherwise authors are only matched by login or email); sessions and application passwords are never copied', 'Must-use plugins and drop-ins', 'Custom database tables and files outside uploads, plugins and themes', 'Revisions, spam/trashed comments and credential-like metadata or options' ),
 		);
 	}
 
@@ -212,7 +230,8 @@ final class AISM_Migration {
 		if ( 'posts' === $kind ) { return self::export_posts( $request ); }
 		if ( 'comments' === $kind ) { return self::export_comments( $request ); }
 		if ( 'site' === $kind ) { return self::export_site( $key ); }
-		return self::error( 'aism_invalid_kind', 'kind must be terms, posts, comments or site.' );
+		if ( 'users' === $kind ) { return self::export_users( $request, $key ); }
+		return self::error( 'aism_invalid_kind', 'kind must be terms, posts, comments, site or users.' );
 	}
 
 	private static function modified_after( $request ) {
@@ -339,6 +358,50 @@ final class AISM_Migration {
 			if ( $ok ) { $options[ $name ] = $value; } else { $skipped[] = $name; }
 		}
 		return self::page( 'site', 1, 1, 1, array( array( 'id' => 1, 'stylesheet' => get_stylesheet(), 'options' => (object) $options ) ), array( 'skipped_options' => $skipped ) );
+	}
+
+	/**
+	 * User accounts with their password hashes, roles and profile metadata, so people can sign in on the target with
+	 * their existing passwords. Sessions, application passwords and credential-like metadata are never exported.
+	 */
+	private static function export_users( $request, $key ) {
+		global $wpdb;
+		if ( is_multisite() ) { return self::error( 'aism_multisite_users', 'User accounts can be exported from single-site WordPress only.', 403 ); }
+		if ( ! self::has_scope( $key, 'users:read' ) ) { return self::error( 'aism_users_scope', 'Exporting user accounts needs the users:read permission on the source key.', 403 ); }
+		if ( ! current_user_can( 'list_users' ) || ! current_user_can( 'edit_users' ) ) { return self::error( 'aism_users_forbidden', 'The key owner needs the list_users and edit_users capabilities.', 403 ); }
+		list( $per_page, $page ) = self::page_args( $request, 100 );
+		// blog_id 0 includes accounts without a role on this site.
+		$args = array( 'blog_id' => 0, 'number' => $per_page, 'paged' => $page, 'orderby' => 'ID', 'order' => 'ASC', 'count_total' => true );
+		$ids = self::ids_param( $request->get_param( 'ids' ) );
+		if ( null !== $ids ) { $args['include'] = $ids ? $ids : array( 0 ); }
+		$query = new WP_User_Query( $args );
+		$prefix = $wpdb->get_blog_prefix();
+		$skipped = array();
+		$items = array();
+		foreach ( $query->get_results() as $user ) {
+			$meta = array();
+			$site_meta = array();
+			foreach ( (array) get_metadata( 'user', $user->ID ) as $name => $values ) {
+				$name = (string) $name;
+				$site = 0 === strpos( $name, $prefix ) ? substr( $name, strlen( $prefix ) ) : null;
+				if ( null !== $site ? in_array( $site, self::SKIP_SITE_USER_META, true ) : preg_match( self::SKIP_USER_META, $name ) ) { $skipped[ $name ] = true; continue; }
+				$out = array();
+				foreach ( (array) $values as $raw ) {
+					$value = self::decode_stored( $raw, $ok );
+					if ( ! $ok ) { $skipped[ $name ] = true; continue 2; }
+					$out[] = $value;
+				}
+				if ( null !== $site ) { $site_meta[ $site ] = $out; } else { $meta[ $name ] = $out; }
+			}
+			$items[] = array(
+				'id' => (int) $user->ID, 'login' => $user->user_login, 'email' => $user->user_email, 'nicename' => $user->user_nicename, 'display_name' => $user->display_name,
+				'url' => $user->user_url, 'registered' => $user->user_registered, 'password_hash' => $user->user_pass, 'roles' => array_values( $user->roles ),
+				'quarantined' => AISM_Users::is_quarantined( $user->ID ), 'meta' => (object) $meta, 'site_meta' => (object) $site_meta,
+			);
+		}
+		$response = new WP_REST_Response( self::page( 'users', $page, $per_page, (int) $query->get_total(), $items, array( 'skipped_meta_keys' => array_keys( $skipped ) ) ) );
+		$response->header( 'Cache-Control', 'no-store, private' );
+		return $response;
 	}
 
 	private static function attachment_path( $id ) {
@@ -498,6 +561,7 @@ final class AISM_Migration {
 		if ( 'post' === $type ) { return (bool) get_post( $id ); }
 		if ( 'term' === $type ) { $term = get_term( (int) $id ); return $term && ! is_wp_error( $term ); }
 		if ( 'comment' === $type ) { return (bool) get_comment( $id ); }
+		if ( 'user' === $type ) { return (bool) get_userdata( $id ); }
 		return true;
 	}
 
@@ -514,7 +578,7 @@ final class AISM_Migration {
 			$wpdb->delete( AISM_Store::table( 'migration_map' ), array( 'id' => $row['id'] ) );
 			$target = 0;
 		}
-		if ( ! $target && in_array( $type, array( 'post', 'term', 'comment' ), true ) ) {
+		if ( ! $target && in_array( $type, array( 'post', 'term', 'comment', 'user' ), true ) ) {
 			$table = _get_meta_table( $type );
 			$column = $type . '_id';
 			$target = (int) $wpdb->get_var( $wpdb->prepare( "SELECT $column FROM $table WHERE meta_key = '_aism_source' AND meta_value = %s LIMIT 1", $source . ':' . $id ) );
@@ -585,6 +649,9 @@ final class AISM_Migration {
 			$login = isset( $info['login'] ) && is_string( $info['login'] ) ? $info['login'] : '';
 			$user = false;
 			if ( '' !== $login && isset( $ctx['options']['author_map'][ $login ] ) ) { $user = get_user_by( 'login', $ctx['options']['author_map'][ $login ] ); }
+			// Accounts copied or matched by the users phase.
+			$mapped = $user || empty( $ctx['source'] ) ? 0 : self::lookup( $ctx['source'], 'user', $source_user );
+			if ( $mapped ) { $user = get_userdata( $mapped ); }
 			if ( ! $user && '' !== $login ) { $user = get_user_by( 'login', $login ); }
 			if ( ! $user && ! empty( $info['email'] ) && is_string( $info['email'] ) ) { $user = get_user_by( 'email', $info['email'] ); }
 			$ctx['resolved'][ $source_user ] = $user ? $user->ID : 0;
@@ -594,7 +661,7 @@ final class AISM_Migration {
 		return $id ? $id : ( $fallback ? $ctx['options']['default_author'] : 0 );
 	}
 
-	private static function import( $request ) {
+	private static function import( $request, $key ) {
 		if ( strlen( $request->get_body() ) > self::MAX_BODY ) { return self::error( 'aism_body_too_large', 'Import bodies may not exceed 16 MiB; send fewer items.', 413 ); }
 		$body = $request->get_json_params();
 		if ( ! is_array( $body ) ) { return self::error( 'aism_invalid_import', 'Send JSON with source, kind and items.' ); }
@@ -602,15 +669,19 @@ final class AISM_Migration {
 		if ( is_wp_error( $source ) ) { return $source; }
 		$kind = $body['kind'] ?? null;
 		$items = $body['items'] ?? null;
-		if ( ! in_array( $kind, array( 'terms', 'posts', 'comments', 'site' ), true ) || ! is_array( $items ) || count( $items ) > self::MAX_PER_PAGE ) { return self::error( 'aism_invalid_import', 'kind must be terms, posts, comments or site, with at most 100 items.' ); }
-		$ctx = self::context( $body['authors'] ?? array(), $body['options'] ?? array() );
+		if ( ! in_array( $kind, array( 'terms', 'posts', 'comments', 'site', 'users' ), true ) || ! is_array( $items ) || count( $items ) > self::MAX_PER_PAGE ) { return self::error( 'aism_invalid_import', 'kind must be terms, posts, comments, site or users, with at most 100 items.' ); }
+		if ( 'users' === $kind ) {
+			if ( ! self::has_scope( $key, 'users:write' ) ) { return self::error( 'aism_users_scope', 'Importing user accounts needs the users:write permission on the target key.', 403 ); }
+			if ( ! self::can_import_users( $key ) ) { return self::error( 'aism_users_forbidden', 'The key owner needs the create_users, edit_users and promote_users capabilities.', 403 ); }
+		}
+		$ctx = self::context( $body['authors'] ?? array(), $body['options'] ?? array(), $source );
 		return self::run_import( $source, $kind, $items, $ctx );
 	}
 
-	private static function context( $authors, $options ) {
+	private static function context( $authors, $options, $source = '' ) {
 		$list = array();
 		foreach ( is_array( $authors ) ? $authors : array() as $id => $info ) { $list[ (int) $id ] = $info; }
-		return array( 'authors' => $list, 'options' => self::options( $options ), 'resolved' => array(), 'author_report' => array(), 'results' => array(), 'errors' => array(), 'warnings' => array(), 'needs_file' => array(), 'skipped_meta' => array() );
+		return array( 'source' => $source, 'authors' => $list, 'options' => self::options( $options ), 'resolved' => array(), 'author_report' => array(), 'results' => array(), 'errors' => array(), 'warnings' => array(), 'needs_file' => array(), 'skipped_meta' => array() );
 	}
 
 	private static function run_import( $source, $kind, $items, &$ctx, $upload = null ) {
@@ -626,6 +697,7 @@ final class AISM_Migration {
 				if ( 'terms' === $kind ) { $result = self::import_term( $source, $item, $ctx ); }
 				elseif ( 'posts' === $kind ) { $result = self::import_post( $source, $item, $ctx, $upload ); }
 				elseif ( 'comments' === $kind ) { $result = self::import_comment( $source, $item, $ctx ); }
+				elseif ( 'users' === $kind ) { $result = self::import_user( $source, $item, $ctx ); }
 				else { $result = self::import_site( $source, $item ); }
 				if ( is_wp_error( $result ) ) { $ctx['errors'][] = array( 'source_id' => $id, 'code' => $result->get_error_code(), 'message' => $result->get_error_message() ); }
 				elseif ( $result ) { $ctx['results'][] = array_merge( array( 'source_id' => $id ), $result ); }
@@ -763,7 +835,7 @@ final class AISM_Migration {
 		$file = $files['file'] ?? null;
 		if ( ! is_array( $file ) || ! isset( $file['error'], $file['tmp_name'], $file['size'] ) || UPLOAD_ERR_OK !== $file['error'] || ! is_uploaded_file( $file['tmp_name'] ) ) { return self::error( 'aism_invalid_upload', 'Upload the original file using multipart field file.' ); }
 		if ( $file['size'] > wp_max_upload_size() ) { return self::error( 'aism_upload_too_large', 'The file exceeds the WordPress upload limit on the target.', 413 ); }
-		$ctx = self::context( json_decode( is_string( $params['authors'] ?? null ) ? $params['authors'] : '{}', true ), json_decode( is_string( $params['options'] ?? null ) ? $params['options'] : '{}', true ) );
+		$ctx = self::context( json_decode( is_string( $params['authors'] ?? null ) ? $params['authors'] : '{}', true ), json_decode( is_string( $params['options'] ?? null ) ? $params['options'] : '{}', true ), $source );
 		// Optional: the file the source actually serves (a -scaled/-rotated or edited copy), used to build sizes.
 		$attached = $files['attached'] ?? null;
 		if ( is_array( $attached ) && isset( $attached['error'], $attached['tmp_name'], $attached['size'], $attached['name'] ) && UPLOAD_ERR_OK === $attached['error'] && is_uploaded_file( $attached['tmp_name'] ) && $attached['size'] <= wp_max_upload_size() ) {
@@ -945,6 +1017,88 @@ final class AISM_Migration {
 		$keys = self::import_meta( 'comment', $target, $item['meta'] ?? array(), $ctx['skipped_meta'] );
 		self::remember( $source, 'comment', (int) $item['id'], $target, 'created' === $action, array( 'parent' => (int) ( $item['parent'] ?? 0 ), 'meta_keys' => $keys ) );
 		return array( 'target_id' => (int) $target, 'action' => $action );
+	}
+
+	/**
+	 * Create a source account on the target with its roles, profile, metadata and password hash. An account that
+	 * already exists on the target (same login or email) is only mapped, never changed, so the target's own
+	 * administrators keep their passwords and roles. Accounts created by an earlier run are updated.
+	 */
+	private static function import_user( $source, $item, &$ctx ) {
+		global $wpdb;
+		require_once ABSPATH . 'wp-admin/includes/user.php';
+		$login = self::text( $item, 'login' );
+		if ( '' === $login || sanitize_user( $login, true ) !== $login || strlen( $login ) > 60 ) { return self::error( 'aism_invalid_user', 'The account has an invalid login.' ); }
+		$email = self::text( $item, 'email' );
+		if ( '' !== $email && ! is_email( $email ) ) { return self::error( 'aism_invalid_user', "Account $login has an invalid email address." ); }
+		if ( ! empty( $item['quarantined'] ) ) { $ctx['warnings'][] = "Account $login is quarantined on the source and was not migrated."; return array( 'target_id' => 0, 'action' => 'skipped', 'login' => $login ); }
+		$existing = self::lookup( $source, 'user', $item['id'] );
+		$row = $existing ? self::row( $source, 'user', (int) $item['id'] ) : null;
+		// Pre-existing target accounts and the key owner are never modified.
+		if ( $existing && ( ( $row && ! $row['created'] ) || get_current_user_id() === $existing ) ) { return array( 'target_id' => $existing, 'action' => 'matched', 'login' => get_userdata( $existing )->user_login ); }
+		if ( $existing && 'skip' === $ctx['options']['on_existing'] ) { return array( 'target_id' => $existing, 'action' => 'skipped', 'login' => $login ); }
+		if ( ! $existing ) {
+			$match = get_user_by( 'login', $login );
+			if ( ! $match && '' !== $email ) { $match = get_user_by( 'email', $email ); }
+			if ( $match ) {
+				self::remember( $source, 'user', (int) $item['id'], $match->ID, false, array(), false );
+				if ( $match->user_login !== $login ) { $ctx['warnings'][] = "Account $login was matched to the existing target account {$match->user_login} by email."; }
+				return array( 'target_id' => (int) $match->ID, 'action' => 'matched', 'login' => $match->user_login );
+			}
+		}
+		$fields = array( 'user_email' => $email, 'display_name' => self::text( $item, 'display_name', $login ), 'user_url' => esc_url_raw( self::text( $item, 'url' ) ) );
+		$nicename = sanitize_title( self::text( $item, 'nicename' ) );
+		if ( '' !== $nicename ) { $fields['user_nicename'] = substr( $nicename, 0, 50 ); }
+		$registered = self::date( $item, 'registered' );
+		if ( $registered ) { $fields['user_registered'] = $registered; }
+		if ( $existing ) {
+			$result = wp_update_user( wp_slash( array_merge( $fields, array( 'ID' => $existing ) ) ) );
+			$action = 'updated';
+		} else {
+			// A random password first; the source hash is stored below. role '' keeps the default role from being applied.
+			$result = wp_insert_user( wp_slash( array_merge( $fields, array( 'user_login' => $login, 'user_pass' => wp_generate_password( 64, true, true ), 'role' => '' ) ) ) );
+			$action = 'created';
+		}
+		if ( is_wp_error( $result ) ) { return $result; }
+		$target = (int) $result;
+		if ( 'created' === $action ) { update_user_meta( $target, '_aism_source', $source . ':' . (int) $item['id'] ); }
+		$user = new WP_User( $target );
+		$user->set_role( '' );
+		$missing_roles = array();
+		foreach ( isset( $item['roles'] ) && is_array( $item['roles'] ) ? $item['roles'] : array() as $role ) {
+			if ( is_string( $role ) && wp_roles()->is_role( $role ) ) { $user->add_role( $role ); } else { $missing_roles[] = is_scalar( $role ) ? (string) $role : '?'; }
+		}
+		if ( $missing_roles ) { $ctx['warnings'][] = "Account $login: role(s) " . implode( ', ', $missing_roles ) . ' do not exist on the target and were not assigned.'; }
+		$keys = self::import_user_meta( $target, $item, $ctx );
+		$hash = self::text( $item, 'password_hash' );
+		if ( 0 === strpos( $hash, '$wp' ) && ! function_exists( 'wp_password_needs_rehash' ) ) {
+			$ctx['warnings'][] = "Account $login: its password hash needs WordPress 6.8 or later on the target, so the account has a random password and must be reset.";
+		} elseif ( preg_match( self::PASSWORD_HASH, $hash ) ) {
+			$wpdb->update( $wpdb->users, array( 'user_pass' => $hash, 'user_activation_key' => '' ), array( 'ID' => $target ) );
+		} else {
+			$ctx['warnings'][] = "Account $login: no usable password hash was sent, so the account has a random password and must be reset.";
+		}
+		clean_user_cache( $target );
+		self::remember( $source, 'user', (int) $item['id'], $target, 'created' === $action, array( 'meta_keys' => $keys ), false );
+		return array( 'target_id' => $target, 'action' => $action, 'login' => $login, 'roles' => array_values( get_userdata( $target )->roles ) );
+	}
+
+	/** Profile metadata and per-site settings (renamed to the target's table prefix). Roles and credentials are refused. */
+	private static function import_user_meta( $target, $item, &$ctx ) {
+		global $wpdb;
+		$safe = array();
+		foreach ( isset( $item['meta'] ) && is_array( $item['meta'] ) ? $item['meta'] : array() as $name => $values ) {
+			$name = (string) $name;
+			// Plain keys may not use the target's table prefix, so they never reach its per-site roles or settings.
+			if ( preg_match( self::SKIP_USER_META, $name ) || 0 === strpos( $name, $wpdb->base_prefix ) ) { $ctx['skipped_meta'][ $name ] = true; continue; }
+			$safe[ $name ] = $values;
+		}
+		foreach ( isset( $item['site_meta'] ) && is_array( $item['site_meta'] ) ? $item['site_meta'] : array() as $suffix => $values ) {
+			$suffix = (string) $suffix;
+			if ( ! preg_match( '/^[A-Za-z0-9_-]{1,100}$/D', $suffix ) || in_array( $suffix, self::SKIP_SITE_USER_META, true ) || preg_match( self::SKIP_USER_META, $suffix ) ) { $ctx['skipped_meta'][ '{prefix}' . $suffix ] = true; continue; }
+			$safe[ $wpdb->get_blog_prefix() . $suffix ] = $values;
+		}
+		return self::import_meta( 'user', $target, $safe, $ctx['skipped_meta'] );
 	}
 
 	private static function import_site( $source, $item ) {
@@ -1265,7 +1419,7 @@ final class AISM_Migration {
 		if ( is_wp_error( $source ) ) { return $source; }
 		$limit = max( 1, min( 200, (int) ( $body['limit'] ?? 50 ) ) );
 		$table = AISM_Store::table( 'migration_map' );
-		// Newest first: comments and menu items go before the posts and terms they reference.
+		// Newest first: comments and menu items go before the posts and terms they reference; accounts go last.
 		$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM $table WHERE source = %s ORDER BY id DESC LIMIT %d", $source, $limit ), ARRAY_A );
 		$deleted = 0;
 		$restored = array();
@@ -1291,6 +1445,10 @@ final class AISM_Migration {
 					if ( true === $ok ) { ++$deleted; } else { $errors[] = array( 'object_type' => 'term', 'target_id' => $target ); }
 				} elseif ( 'comment' === $row['object_type'] && get_comment_meta( $target, '_aism_source', true ) === $marker ) {
 					if ( wp_delete_comment( $target, true ) ) { ++$deleted; } else { $errors[] = array( 'object_type' => 'comment', 'target_id' => $target ); }
+				} elseif ( 'user' === $row['object_type'] && get_user_meta( $target, '_aism_source', true ) === $marker ) {
+					// Content the account still owns goes to the key owner instead of being deleted.
+					require_once ABSPATH . 'wp-admin/includes/user.php';
+					if ( get_current_user_id() !== $target && current_user_can( 'delete_users' ) && wp_delete_user( $target, get_current_user_id() ) ) { ++$deleted; } else { $errors[] = array( 'object_type' => 'user', 'target_id' => $target ); }
 				}
 			}
 			$wpdb->delete( $table, array( 'id' => $row['id'] ) );
